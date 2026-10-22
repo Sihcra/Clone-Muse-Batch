@@ -1,0 +1,30 @@
+appId: com.musebatch.studio
+productName: MuseBatch Studio
+directories:
+  output: dist
+  buildResources: resources
+
+files:
+  - src/**/*
+  - ui/**/*
+  - package.json
+
+extraResources:
+  - from: resources/bin
+    to: bin
+    filter:
+      - "**/*"
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: resources/icon.ico
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: MuseBatch Studio
