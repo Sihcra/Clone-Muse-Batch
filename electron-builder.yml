@@ -8,7 +8,9 @@ files:
   - src/**/*
   - ui/**/*
   - package.json
+  - "!**/*.test.js"
 
+# ffmpeg.exe, ffprobe.exe và các DLL đi kèm: chép vào resources\bin trước khi build (không đưa lên git)
 extraResources:
   - from: resources/bin
     to: bin
@@ -20,7 +22,6 @@ win:
     - target: nsis
       arch:
         - x64
-  icon: resources/icon.ico
 
 nsis:
   oneClick: false

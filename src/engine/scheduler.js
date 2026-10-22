@@ -1,131 +1,71 @@
-'use strict'
-// scheduler.js — Pure scheduling logic (matchmaking task <-> account)
-// ECC Rule: Pure functions, zero I/O, deterministic
-
+'use strict';
 /**
- * Checks if quota limit is exhausted.
- * @param {{ weekly?: number, used?: number }} [quota]
- * @returns {boolean}
+ * SCHEDULER — chọn task nào chạy trên tài khoản nào. Hàm thuần: không I/O, không Chrome.
+ * 1. Task dở (đã gửi, có sessionId) chỉ dò tiếp trên đúng tài khoản đã gửi.
+ * 2. Task làm tiếp chat cũ (thread + pin) chờ đúng tài khoản giữ chat; tài khoản đó hết dùng được thì để TK khác làm chat mới.
+ * 3. Task chờ: chia cho tài khoản dùng được, ít việc nhất → còn nhiều hạn mức nhất → lâu chưa dùng nhất
+ *    (chế độ "Lần lượt": giữ thứ tự danh sách tài khoản).
  */
-function weeklyOut(quota) {
-  if (!quota || typeof quota.weekly !== 'number' || typeof quota.used !== 'number') {
-    return false
-  }
-  return quota.used >= quota.weekly
+
+// Hết hạn mức tuần. Không có trạng thái rõ ràng lúc hết thật → bắt theo chữ; SUFFICIENT/LOW coi là còn.
+function weeklyOut(q) {
+  if (!q) return false;
+  return q.pct >= 100 || /EXHAUST|EXCEED|DEPLET|LIMIT|OUT|BLOCK/i.test(q.status || '');
 }
 
-/**
- * Returns timestamp until which the account is paused, or 0 if not paused.
- * @param {object} acc
- * @param {object} settings
- * @param {number} now
- * @returns {number}
- */
-function pausedUntil(acc, settings = {}, now = Date.now()) {
-  if (settings.keepGoing) return 0
-  if (weeklyOut(acc.quota)) {
-    return acc.quota?.resetAt && acc.quota.resetAt > now ? acc.quota.resetAt : now + 3600_000
-  }
-  return 0
+// Thời điểm hết nghỉ (ms) nếu tài khoản đang phải nghỉ vì hết hạn mức; 0 = không nghỉ.
+function pausedUntil(acc, settings, now) {
+  const q = acc.quota;
+  if (!weeklyOut(q) || settings.keepGoing) return 0;
+  if (q.resetsAt && q.resetsAt <= now) return 0; // đã qua lúc đặt lại, số cũ hết hiệu lực
+  if (settings.useTopup && q.topupLeft > 0) return 0;
+  return q.resetsAt || Infinity;
 }
 
-/**
- * Checks if an account is ready to accept new or ongoing tasks.
- * @param {object} acc
- * @param {object} settings
- * @param {number} now
- * @returns {boolean}
- */
-function isUsable(acc, settings = {}, now = Date.now()) {
-  if (!acc || !acc.enabled || !acc.loggedIn) return false
-  if (pausedUntil(acc, settings, now) > now) return false
-  return true
-}
+const usable = (acc, settings, now) => acc.enabled && acc.loggedIn !== false && !pausedUntil(acc, settings, now);
 
-/**
- * Pure matchmaking algorithm.
- * @param {{
- *   tasks: Array<object>,
- *   accounts: Array<object>,
- *   settings: object,
- *   runningTasks?: Array<object>,
- *   now?: number
- * }} params
- * @returns {Array<{ task: object, accountId: string }>}
- */
-function plan({ tasks, accounts, settings = {}, runningTasks = [], now = Date.now() }) {
-  const usableAccounts = accounts.filter(acc => isUsable(acc, settings, now))
-  if (usableAccounts.length === 0) return []
+function plan({ tasks, accounts, settings, running, now }) {
+  const busy = new Map(accounts.map(a => [a.id, 0]));
+  for (const id of running.values()) busy.set(id, (busy.get(id) || 0) + 1);
+  let total = running.size;
+  const out = [];
 
-  // Track busy thread counts per account
-  const busyCount = new Map()
-  for (const acc of usableAccounts) {
-    busyCount.set(acc.id, 0)
+  const canTake = acc => {
+    const b = busy.get(acc.id) || 0;
+    const activeAccounts = [...busy.values()].filter(n => n > 0).length;
+    return b < acc.threads && total < settings.totalThreads && (b > 0 || activeAccounts < settings.maxAccounts);
+  };
+  const take = (task, acc) => {
+    busy.set(acc.id, (busy.get(acc.id) || 0) + 1);
+    total++;
+    out.push({ taskId: task.id, accountId: acc.id });
+  };
+
+  const free = tasks.filter(t => !running.has(t.id));
+
+  for (const t of free.filter(t => t.status === 'processing' && t.sessionId)) {
+    const acc = accounts.find(a => a.id === (t.accountId || 'default'));
+    if (acc && acc.enabled && acc.loggedIn !== false && canTake(acc)) take(t, acc);
   }
-  for (const rt of runningTasks) {
-    if (rt.accountId && busyCount.has(rt.accountId)) {
-      busyCount.set(rt.accountId, busyCount.get(rt.accountId) + 1)
+
+  const queued = free.filter(t => t.status === 'queued' && !t.held).sort((a, b) => a.createdAt - b.createdAt);
+  for (const t of queued) {
+    let pool = accounts.filter(a => usable(a, settings, now) && canTake(a));
+    const pin = t.thread && accounts.find(a => a.id === t.pin);
+    if (pin && usable(pin, settings, now)) pool = pool.filter(a => a === pin);
+    if (!pool.length) {
+      if (pin) continue; // tài khoản giữ chat đang bận → task khác vẫn được chia
+      break;
     }
-  }
-
-  const pairs = []
-  const assignedTaskIds = new Set(runningTasks.map(t => t.id))
-
-  // Helper to check availability
-  const hasCapacity = (accId) => {
-    const acc = usableAccounts.find(a => a.id === accId)
-    const limit = acc?.threads ?? settings.totalThreads ?? 1
-    return (busyCount.get(accId) || 0) < limit
-  }
-
-  // Priority 1: Tasks with existing sessionId (resumed/in-progress)
-  for (const task of tasks) {
-    if (assignedTaskIds.has(task.id)) continue
-    if (task.sessionId && task.accountId && hasCapacity(task.accountId)) {
-      pairs.push({ task, accountId: task.accountId })
-      assignedTaskIds.add(task.id)
-      busyCount.set(task.accountId, busyCount.get(task.accountId) + 1)
+    if (settings.mode !== 'sequential') {
+      pool = pool.slice().sort((a, b) =>
+        busy.get(a.id) - busy.get(b.id) ||
+        (a.quota?.pct ?? 0) - (b.quota?.pct ?? 0) ||
+        (a.lastUsedAt || 0) - (b.lastUsedAt || 0));
     }
+    take(t, pool[0]);
   }
-
-  // Priority 2: Tasks pinned to an account thread
-  for (const task of tasks) {
-    if (assignedTaskIds.has(task.id)) continue
-    if (task.pin && task.accountId && hasCapacity(task.accountId)) {
-      pairs.push({ task, accountId: task.accountId })
-      assignedTaskIds.add(task.id)
-      busyCount.set(task.accountId, busyCount.get(task.accountId) + 1)
-    }
-  }
-
-  // Priority 3: Queued tasks sorted by FIFO
-  const queuedTasks = tasks.filter(t => t.status === 'queued' && !assignedTaskIds.has(t.id))
-
-  for (const task of queuedTasks) {
-    // Find candidate accounts with capacity
-    const candidates = usableAccounts.filter(acc => hasCapacity(acc.id))
-    if (candidates.length === 0) break
-
-    // Sort candidates: lowest quota used %, then oldest lastUsedAt
-    candidates.sort((a, b) => {
-      const quotaPctA = a.quota?.weekly ? (a.quota.used / a.quota.weekly) : 0
-      const quotaPctB = b.quota?.weekly ? (b.quota.used / b.quota.weekly) : 0
-      if (quotaPctA !== quotaPctB) return quotaPctA - quotaPctB
-      return (a.lastUsedAt || 0) - (b.lastUsedAt || 0)
-    })
-
-    const chosen = candidates[0]
-    pairs.push({ task, accountId: chosen.id })
-    assignedTaskIds.add(task.id)
-    busyCount.set(chosen.id, (busyCount.get(chosen.id) || 0) + 1)
-  }
-
-  return pairs
+  return out;
 }
 
-module.exports = {
-  weeklyOut,
-  pausedUntil,
-  isUsable,
-  plan,
-}
+module.exports = { weeklyOut, pausedUntil, usable, plan };
