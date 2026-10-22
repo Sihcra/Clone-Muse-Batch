@@ -1,200 +1,263 @@
-'use strict'
-// chrome.js — Chrome process manager & CDP WebSocket client
-// Opens real Chrome with a dedicated profile and connects via CDP WebSocket
-
-const { spawn } = require('node:child_process')
-const { EventEmitter } = require('node:events')
-const fs = require('node:fs')
-const path = require('node:path')
-const http = require('node:http')
-const WebSocket = require('ws')
-const { CDP_PORT_BASE } = require('./constants')
-
-// ── Chrome path detection ──────────────────────────────────────────────────
-
-const CHROME_PATHS_WIN = [
-  'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-  'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-  process.env.LOCALAPPDATA
-    ? path.join(process.env.LOCALAPPDATA, 'Google\\Chrome\\Application\\chrome.exe')
-    : '',
-].filter(Boolean)
-
-const CHROME_PATHS_MAC = [
-  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-]
-
+'use strict';
 /**
- * @returns {string} path to chrome executable
- * @throws if not found
+ * CHROME — mở Google Chrome thật của máy (có giao diện, không headless) với profile riêng từng tài khoản,
+ * điều khiển bằng CDP qua pipe (--remote-debugging-pipe): fd 3 = app gửi lệnh, fd 4 = Chrome trả lời,
+ * mỗi tin là 1 JSON kết thúc bằng \0. Không mở cổng mạng nào.
+ * Chrome 136+ chặn điều khiển profile mặc định → bắt buộc --user-data-dir riêng.
  */
-function findChromePath() {
-  const candidates = process.platform === 'darwin' ? CHROME_PATHS_MAC : CHROME_PATHS_WIN
-  const found = candidates.find(p => p && fs.existsSync(p))
-  if (!found) throw new Error('Google Chrome not found. Please install Chrome.')
-  return found
+
+const { spawn, execFile } = require('child_process');
+const { EventEmitter } = require('events');
+const fs = require('fs');
+const path = require('path');
+
+const IS_MAC = process.platform === 'darwin';
+
+function findChrome() {
+  if (IS_MAC) return '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+  const roots = [process.env.PROGRAMFILES, process.env['PROGRAMFILES(X86)'], process.env.LOCALAPPDATA].filter(Boolean);
+  for (const r of roots) {
+    const p = path.join(r, 'Google', 'Chrome', 'Application', 'chrome.exe');
+    if (fs.existsSync(p)) return p;
+  }
+  return 'chrome.exe';
 }
+const CHROME_PATH = findChrome();
 
-// ── CDP Connection ─────────────────────────────────────────────────────────
+// Windows không "ẩn app" được như Mac → đẩy cửa sổ ra ngoài màn hình. Cửa sổ vẫn "hiện" nên JS chạy bình thường.
+const OFFSCREEN = { left: -32000, top: -32000 };
+const SHOWN = { left: 80, top: 40, width: 1200, height: 860 };
+const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-class CdpConnection extends EventEmitter {
-  constructor(wsUrl) {
-    super()
-    this._ws = new WebSocket(wsUrl)
-    this._pending = new Map() // id → { resolve, reject }
-    this._nextId = 1
-    this._ws.on('message', raw => this._onMessage(raw))
-    this._ws.on('error', err => this.emit('error', err))
-    this._ws.on('close', () => this.emit('close'))
-  }
+// macOS: ẩn/hiện cả app Chrome theo PID qua JXA (như Cmd+H) — không cửa sổ, không xuống Dock.
+const jxa = (pid, body, done = () => {}) => execFile('osascript', ['-l', 'JavaScript', '-e',
+  `ObjC.import('AppKit'); const app = $.NSRunningApplication.runningApplicationWithProcessIdentifier(${pid}); ${body}`], done);
+const jxaAsync = (pid, body) => new Promise(r => jxa(pid, body, () => r()));
+// app.hidden chỉ cập nhật khi run loop chạy
+const RUNLOOP = '$.NSRunLoop.currentRunLoop.runUntilDate($.NSDate.dateWithTimeIntervalSinceNow(0.25))';
 
-  /** Wait for WebSocket to open */
-  ready() {
-    return new Promise((resolve, reject) => {
-      if (this._ws.readyState === WebSocket.OPEN) return resolve()
-      this._ws.once('open', resolve)
-      this._ws.once('error', reject)
-    })
-  }
+// Chrome ẩn/thu nhỏ: trang mới tải báo document.hidden và không chạy requestAnimationFrame → Muse (Next.js)
+// không dựng xong, mất client chat. Nạp trước mỗi trang: luôn báo "visible", rAF có setTimeout 16ms dự phòng.
+const VISIBILITY_SHIM = `(() => {
+  const def = (k, v) => Object.defineProperty(Document.prototype, k, { get: () => v, configurable: true });
+  def('visibilityState', 'visible');
+  def('hidden', false);
+  const nativeRaf = window.requestAnimationFrame.bind(window);
+  const nativeCaf = window.cancelAnimationFrame.bind(window);
+  const live = new Map();
+  let seq = 0;
+  window.requestAnimationFrame = cb => {
+    const id = ++seq;
+    let fired = false;
+    const run = ts => { if (fired) return; fired = true; live.delete(id); cb(ts); };
+    live.set(id, [nativeRaf(run), setTimeout(() => run(performance.now()), 16)]);
+    return id;
+  };
+  window.cancelAnimationFrame = id => {
+    const h = live.get(id);
+    if (!h) return;
+    nativeCaf(h[0]);
+    clearTimeout(h[1]);
+    live.delete(id);
+  };
+})();`;
 
+class Chrome extends EventEmitter {
   /**
-   * Send a CDP command and await its response.
-   * @param {string} method
-   * @param {object} [params]
-   * @param {string} [sessionId]
-   * @returns {Promise<any>}
+   * proxy: { server: 'http://ip:port' | 'socks5://ip:port', username, password, host, port, line }
+   * resolveProxy: async () => proxy | null — hỏi lại mỗi lần mở Chrome, nên đổi proxy chỉ cần đóng Chrome.
    */
-  cmd(method, params = {}, sessionId) {
-    return new Promise((resolve, reject) => {
-      const id = this._nextId++
-      const msg = { id, method, params }
-      if (sessionId) msg.sessionId = sessionId
-      this._pending.set(id, { resolve, reject })
-      this._ws.send(JSON.stringify(msg))
-    })
+  constructor({ profileDir, url, chromePath = CHROME_PATH, proxy = null, resolveProxy = null }) {
+    super();
+    Object.assign(this, { profileDir, url, chromePath, proxy, resolveProxy });
+    this.proc = null;
+    this.sessionId = '';
+    this.targetId = '';
+    this.seq = 0;
+    this.pending = new Map();
+    this.starting = null;
   }
 
-  /**
-   * Evaluate JS in the page context.
-   * @param {string} expression
-   * @param {number} [timeoutMs=10000]
-   */
-  async evaluate(expression, timeoutMs = 10_000) {
-    const result = await Promise.race([
-      this.cmd('Runtime.evaluate', {
-        expression,
-        awaitPromise: true,
-        returnByValue: true,
-      }),
-      new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('evaluate() timed out')), timeoutMs)
-      ),
-    ])
-    if (result.exceptionDetails) {
-      throw new Error(result.exceptionDetails.exception?.description ?? 'CDP evaluate error')
-    }
-    return result.result?.value
+  // Sẵn sàng = process còn sống VÀ đang gắn vào 1 tab (Mac: đóng cửa sổ thì Chrome vẫn chạy nhưng mất tab).
+  get running() {
+    return Boolean(this.proc && this.sessionId);
   }
 
-  close() {
-    this._ws.close()
+  // Nhiều chỗ gọi cùng lúc (lúc mở app) → dùng chung 1 lần mở
+  start() {
+    if (!this.starting) this.starting = this.launch().finally(() => { this.starting = null; });
+    return this.starting;
   }
 
-  _onMessage(raw) {
-    let msg
-    try { msg = JSON.parse(raw) } catch { return }
-
-    if (msg.id && this._pending.has(msg.id)) {
-      const { resolve, reject } = this._pending.get(msg.id)
-      this._pending.delete(msg.id)
-      if (msg.error) return reject(new Error(msg.error.message))
-      resolve(msg.result)
-    } else if (msg.method) {
-      this.emit(msg.method, msg.params)
-    }
-  }
-}
-
-// ── Chrome launcher ────────────────────────────────────────────────────────
-
-class Chrome {
-  /**
-   * @param {{ profilePath: string, proxy?: string, port?: number }} opts
-   */
-  constructor({ profilePath, proxy, port = CDP_PORT_BASE }) {
-    this.profilePath = profilePath
-    this.proxy = proxy
-    this.port = port
-    this._proc = null
-    this.cdp = null
-  }
-
-  /**
-   * Launch Chrome and connect CDP.
-   * @returns {Promise<CdpConnection>}
-   */
   async launch() {
-    const chromePath = findChromePath()
-    fs.mkdirSync(this.profilePath, { recursive: true })
+    if (this.proc) return this.attach();
+    if (!fs.existsSync(this.chromePath)) throw new Error('Không tìm thấy Google Chrome — cài Google Chrome rồi mở lại app');
+    fs.mkdirSync(this.profileDir, { recursive: true });
+    if (this.resolveProxy) this.proxy = await this.resolveProxy();
 
     const args = [
-      `--remote-debugging-port=${this.port}`,
-      `--user-data-dir=${this.profilePath}`,
+      `--user-data-dir=${this.profileDir}`,
+      '--remote-debugging-pipe',
       '--no-first-run',
       '--no-default-browser-check',
-      '--disable-background-networking',
-      '--disable-sync',
-    ]
-    if (this.proxy) args.push(`--proxy-server=${this.proxy}`)
-    args.push('https://muse.ai')
+      // Chrome nằm ngoài màn hình vẫn phải chạy timer/JS bình thường để dò phiên Muse
+      '--disable-background-timer-throttling',
+      '--disable-renderer-backgrounding',
+      '--disable-backgrounding-occluded-windows',
+      ...(this.proxy ? [`--proxy-server=${this.proxy.server}`] : []),
+      ...(IS_MAC ? [] : [`--window-position=${OFFSCREEN.left},${OFFSCREEN.top}`]),
+      'about:blank' // trang trắng trước, gắn shim rồi mới vào Muse
+    ];
+    const proc = spawn(this.chromePath, args, { stdio: ['ignore', 'ignore', 'ignore', 'pipe', 'pipe'] });
+    this.proc = proc;
 
-    this._proc = spawn(chromePath, args, { stdio: 'ignore', detached: false })
-    this._proc.on('error', err => { throw err })
-
-    const wsUrl = await this._getWsUrl()
-    this.cdp = new CdpConnection(wsUrl)
-    await this.cdp.ready()
-    await this.cdp.cmd('Runtime.enable')
-    await this.cdp.cmd('Page.enable')
-    return this.cdp
-  }
-
-  /** Kill Chrome process */
-  kill() {
-    if (this._proc && !this._proc.killed) this._proc.kill()
-    if (this.cdp) this.cdp.close()
-    this._proc = null
-    this.cdp = null
-  }
-
-  /** Poll /json endpoint until Chrome exposes a debuggable page */
-  async _getWsUrl(retries = 20, intervalMs = 500) {
-    for (let i = 0; i < retries; i++) {
-      try {
-        const pages = await this._fetchJson()
-        const page = pages.find(p => p.type === 'page')
-        if (page?.webSocketDebuggerUrl) return page.webSocketDebuggerUrl
-      } catch {
-        // Chrome not ready yet
+    let buf = '';
+    proc.stdio[4].on('data', chunk => {
+      buf += chunk.toString('utf8');
+      let end;
+      while ((end = buf.indexOf('\0')) >= 0) {
+        const raw = buf.slice(0, end);
+        buf = buf.slice(end + 1);
+        let msg;
+        try { msg = JSON.parse(raw); } catch { continue; }
+        this.onMessage(msg);
       }
-      await sleep(intervalMs)
+    });
+    proc.stdio[3].on('error', () => {});
+    proc.once('error', () => this.onExit(proc));
+    proc.once('exit', () => this.onExit(proc));
+
+    try {
+      // Proxy có user/pass: bắt yêu cầu đăng nhập proxy ở cấp trình duyệt rồi trả lời qua CDP Fetch
+      if (this.proxy?.username) await this.cmd('Fetch.enable', { handleAuthRequests: true, patterns: [{ urlPattern: '*' }] });
+      await this.attach();
+      await this.hide();
+      // Mac: Chrome mới mở hay tự hiện lại sau 1–2s → canh ~10s, hiện thì ẩn lại; show() sẽ dừng canh
+      if (IS_MAC) this.guard = jxa(proc.pid, `app.hide; for (let i = 0; i < 40; i++) { ${RUNLOOP}; if (!app.hidden) app.hide; }`);
+      await this.cmd('Page.navigate', { url: this.url }, this.sessionId);
+    } catch (e) {
+      await this.close();
+      throw e;
     }
-    throw new Error(`Chrome CDP not reachable on port ${this.port} after ${retries} retries`)
   }
 
-  _fetchJson() {
+  onMessage(msg) {
+    // Tab Muse bị đóng → bỏ phiên, lần gọi sau start() tự gắn lại
+    if (msg.method === 'Target.detachedFromTarget' && msg.params?.sessionId === this.sessionId) this.sessionId = '';
+    if (msg.method && msg.method.startsWith('Fetch.')) this.onFetch(msg);
+    if (msg.id === undefined) return;
+    const p = this.pending.get(msg.id);
+    if (!p) return;
+    this.pending.delete(msg.id);
+    if (msg.error) p.reject(new Error(msg.error.message));
+    else p.resolve(msg.result);
+  }
+
+  // Gắn vào tab muse.ai (hoặc tab trang đầu tiên); không có tab nào → tạo tab mới
+  async attach() {
+    let target = null;
+    for (let i = 0; i < 10 && !target; i++) {
+      const { targetInfos } = await this.cmd('Target.getTargets');
+      const pages = targetInfos.filter(t => t.type === 'page');
+      target = pages.find(t => t.url.includes('muse.ai')) || pages[0] || null;
+      if (!target) await sleep(200);
+    }
+    const targetId = target ? target.targetId : (await this.cmd('Target.createTarget', { url: this.url })).targetId;
+    const { sessionId } = await this.cmd('Target.attachToTarget', { targetId, flatten: true });
+    await this.cmd('Page.enable', {}, sessionId); // thiếu Page.enable thì script nạp trước không chạy
+    await this.cmd('Page.addScriptToEvaluateOnNewDocument', { source: VISIBILITY_SHIM }, sessionId);
+    this.targetId = targetId;
+    this.sessionId = sessionId;
+  }
+
+  onFetch({ method, params, sessionId }) {
+    const { requestId } = params;
+    let reply;
+    if (method === 'Fetch.authRequired') {
+      const fromProxy = params.authChallenge?.source === 'Proxy';
+      reply = this.cmd('Fetch.continueWithAuth', {
+        requestId,
+        authChallengeResponse: fromProxy
+          ? { response: 'ProvideCredentials', username: this.proxy?.username || '', password: this.proxy?.password || '' }
+          : { response: 'Default' }
+      }, sessionId);
+    } else {
+      reply = this.cmd('Fetch.continueRequest', { requestId }, sessionId);
+    }
+    reply.catch(() => {});
+  }
+
+  onExit(proc) {
+    if (this.proc !== proc) return;
+    this.proc = null;
+    this.sessionId = '';
+    for (const p of this.pending.values()) p.reject(new Error('Chrome đã đóng'));
+    this.pending.clear();
+    this.emit('exit');
+  }
+
+  // Lệnh CDP. Có sessionId = lệnh cho tab Muse, không có = lệnh cho cả trình duyệt. Quá hạn → lỗi, không chờ mãi.
+  cmd(method, params = {}, sessionId, timeoutMs = 60e3) {
+    if (!this.proc) return Promise.reject(new Error('Chrome đã đóng'));
+    const id = ++this.seq;
     return new Promise((resolve, reject) => {
-      http.get(`http://127.0.0.1:${this.port}/json`, res => {
-        let data = ''
-        res.on('data', chunk => { data += chunk })
-        res.on('end', () => {
-          try { resolve(JSON.parse(data)) } catch (e) { reject(e) }
-        })
-      }).on('error', reject)
-    })
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`Chrome không trả lời ${method} (quá ${Math.round(timeoutMs / 1000)}s)`));
+      }, timeoutMs);
+      this.pending.set(id, {
+        resolve: v => { clearTimeout(timer); resolve(v); },
+        reject: e => { clearTimeout(timer); reject(e); }
+      });
+      const msg = { id, method, params };
+      if (sessionId) msg.sessionId = sessionId;
+      this.proc.stdio[3].write(JSON.stringify(msg) + '\0');
+    });
+  }
+
+  async evaluate(expression, timeoutMs) {
+    if (this.proc && !this.sessionId) throw new Error('Chrome mất tab Muse');
+    const r = await this.cmd('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }, this.sessionId, timeoutMs);
+    if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text || 'Lỗi chạy script trong trang');
+    return r.result.value;
+  }
+
+  // Chrome không cho đặt vị trí khi đang thu nhỏ/phóng to → về 'normal' trước
+  async setWindow(bounds) {
+    const { windowId } = await this.cmd('Browser.getWindowForTarget', { targetId: this.targetId });
+    await this.cmd('Browser.setWindowBounds', { windowId, bounds: { windowState: 'normal' } });
+    if (bounds) await this.cmd('Browser.setWindowBounds', { windowId, bounds });
+  }
+
+  async show() {
+    if (this.guard) { this.guard.kill(); this.guard = null; }
+    if (IS_MAC) await jxaAsync(this.proc.pid, 'app.unhide');
+    await this.setWindow(IS_MAC ? null : SHOWN);
+    await this.cmd('Target.activateTarget', { targetId: this.targetId });
+    if (IS_MAC) await jxaAsync(this.proc.pid, 'app.activateWithOptions(2)');
+  }
+
+  hide() {
+    if (!this.proc) return Promise.resolve();
+    if (!IS_MAC) return this.setWindow(OFFSCREEN);
+    // Chrome vừa mở chưa khởi động xong thì lệnh hide bị bỏ qua → thử lại tới khi ẩn (~10s)
+    return jxaAsync(this.proc.pid, `app.hide; for (let i = 0; i < 40 && !app.hidden; i++) { ${RUNLOOP}; app.hide; }`);
+  }
+
+  async clearSiteData(origin) {
+    await this.cmd('Storage.clearDataForOrigin', { origin, storageTypes: 'all' });
+    await this.cmd('Page.navigate', { url: this.url }, this.sessionId);
+  }
+
+  async close() {
+    const proc = this.proc;
+    if (!proc) return;
+    const exited = new Promise(r => proc.once('exit', r));
+    this.cmd('Browser.close').catch(() => {});
+    const killer = setTimeout(() => { try { proc.kill(); } catch {} }, 3000);
+    await exited;
+    clearTimeout(killer);
   }
 }
 
-function sleep(ms) { return new Promise(r => setTimeout(r, ms)) }
-
-module.exports = { Chrome, CdpConnection, findChromePath }
+module.exports = { Chrome, CHROME_PATH, VISIBILITY_SHIM };

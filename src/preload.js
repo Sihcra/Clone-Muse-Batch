@@ -1,64 +1,66 @@
-'use strict'
-// preload.js — contextBridge: only expose what the renderer actually needs
-// Security: no ipcRenderer exposure, no Node access from renderer
+'use strict';
+const { contextBridge, ipcRenderer } = require('electron');
 
-const { contextBridge, ipcRenderer } = require('electron')
+// Thanh tiêu đề theo hệ điều hành (Windows chừa chỗ 3 nút bên phải, Mac chừa đèn bên trái)
+window.addEventListener('DOMContentLoaded', () => {
+  document.documentElement.dataset.os = process.platform;
+});
 
-// Whitelist of channels the renderer may invoke
-const INVOKE_CHANNELS = new Set([
-  'task:create',
-  'task:list',
-  'task:cancel',
-  'task:retry',
-  'task:delete',
-  'account:list',
-  'account:save',
-  'account:delete',
-  'account:open-browser',
-  'account:refresh-quota',
-  'settings:get',
-  'settings:save',
-  'crawler:scrape',
-  'product-ai:gen',
-  'video:open-folder',
-  'video:merge-test',
-  'crm:get-status',
-  'crm:toggle',
-  'fb:get-pages',
-  'fb:post-reels',
-  'license:check',
-  'engine:test-chrome',
-])
+const invoke = channel => (...args) => ipcRenderer.invoke(channel, ...args);
+const on = channel => cb => ipcRenderer.on(channel, (_e, value) => cb(value));
 
-// Channels the main process may push to renderer
-const PUSH_CHANNELS = new Set([
-  'task:status-changed',
-  'crm:log',
-])
+contextBridge.exposeInMainWorld('electronAPI', {
+  openExternal: invoke('open-external'),
+  openOutputFolder: invoke('open-output-folder'),
+  getAppConfig: invoke('get-app-config'),
+  scrapeAndAnalyzeLadi: invoke('scrape-and-analyze-ladi'),
+  selectImageFile: invoke('select-image-file'),
+  queueLoad: invoke('queue-load'),
+  queueSave: invoke('queue-save'),
+  fetchImageBase64: invoke('fetch-image-base64'),
+  mergeVideos: invoke('merge-videos'),
+  addMusic: invoke('add-music'),
+  openMusicFolder: invoke('open-music-folder'),
+  getStudio: invoke('studio-get'),
+  saveStudio: invoke('studio-save'),
+  addStudioImage: invoke('studio-add-image'),
+  addProject: invoke('project-add'),
+  updateProject: invoke('project-update'),
+  setProject: invoke('project-current'),
+  removeProject: invoke('project-remove'),
+  submitTask: invoke('task-submit'),
+  listTasks: invoke('task-list'),
+  cancelTask: invoke('task-cancel'),
+  retryTask: invoke('task-retry'),
+  removeTask: invoke('task-remove'),
+  resumeTasks: invoke('task-resume'),
+  clearFinishedTasks: invoke('task-clear-finished'),
+  runTasks: invoke('task-run'),
+  stopAllTasks: invoke('task-stop-all'),
+  revealFile: invoke('reveal-file'),
+  getApiKey: invoke('get-api-key'),
+  listAccounts: invoke('accounts-list'),
+  addAccount: invoke('account-add'),
+  updateAccount: invoke('account-update'),
+  removeAccount: invoke('account-remove'),
+  loginAccount: invoke('account-login'),
+  showAccount: invoke('account-show'),
+  logoutAccount: invoke('account-logout'),
+  saveAccountSettings: invoke('accounts-settings'),
+  checkQuota: invoke('accounts-check-quota'),
+  checkProxies: invoke('proxies-check'),
+  checkLogins: invoke('accounts-check-login'),
+  listLibrary: invoke('list-library'),
+  trashFiles: invoke('trash-files'),
+  getSettings: invoke('get-settings'),
+  saveSettings: invoke('save-settings'),
+  selectFolder: invoke('select-folder'),
 
-contextBridge.exposeInMainWorld('api', {
-  /**
-   * Two-way invoke: renderer calls main, awaits response.
-   * @param {string} channel
-   * @param {any} payload
-   */
-  invoke(channel, payload) {
-    if (!INVOKE_CHANNELS.has(channel)) {
-      return Promise.resolve({ ok: false, error: `Unknown channel: ${channel}` })
-    }
-    return ipcRenderer.invoke(channel, payload)
-  },
-
-  /**
-   * Subscribe to push events from main.
-   * @param {string} channel
-   * @param {Function} handler
-   * @returns {Function} unsubscribe
-   */
-  on(channel, handler) {
-    if (!PUSH_CHANNELS.has(channel)) return () => {}
-    const wrapped = (_, ...args) => handler(...args)
-    ipcRenderer.on(channel, wrapped)
-    return () => ipcRenderer.removeListener(channel, wrapped)
-  },
-})
+  onStatusUpdate: on('status-update'),
+  onVideoCompleted: on('video-completed'),
+  onTaskUpdate: on('task-update'),
+  onStudioUpdate: on('studio-update'),
+  onMergeProgress: on('merge-progress'),
+  onAccountsUpdate: on('accounts-update'),
+  onCrmJobReceived: on('crm-job-received')
+});
