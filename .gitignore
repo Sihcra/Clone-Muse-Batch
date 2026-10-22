@@ -1,0 +1,21 @@
+# Dependencies
+node_modules/
+
+# Production build outputs
+dist/
+out/
+
+# Binaries (FFmpeg static build & heavy DLLs)
+resources/bin/*.exe
+resources/bin/*.dll
+
+# Runtime data & temp files
+userData/
+*.tmp
+*.log
+
+# OS & Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

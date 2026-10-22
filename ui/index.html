@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MuseBatch Studio Pro</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <!-- Titlebar -->
+  <header class="titlebar">
+    <div class="titlebar-brand">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <polygon points="5 3 19 12 5 21 5 3"></polygon>
+      </svg>
+      <span>MUSEBATCH PRO</span>
+    </div>
+    <div id="licenseBadge" class="badge badge-queued">EDITION: CHECKING...</div>
+  </header>
+
+  <!-- Main Container -->
+  <div class="app-container">
+    <!-- Sidebar Navigation -->
+    <nav class="sidebar">
+      <div class="nav-item active" data-tab="text-video">📝 Text → Video</div>
+      <div class="nav-item" data-tab="image-video">🖼️ Image → Video</div>
+      <div class="nav-item" data-tab="ladipage">⚡ LadiPage Studio</div>
+      <div class="nav-item" data-tab="videos">🎬 Kho Video</div>
+      <div class="nav-item" data-tab="crm">🌐 CRM / API Server</div>
+      <div class="nav-item" data-tab="accounts">👥 Tài khoản</div>
+      <div class="nav-item" data-tab="settings">⚙️ Cài đặt</div>
+      <div class="nav-item" data-tab="studio">🧠 Studio AI</div>
+    </nav>
+
+    <!-- Content Tabs -->
+    <main class="content-area">
+      <!-- 1. Text -> Video -->
+      <section id="text-video" class="tab-pane active">
+        <div class="card">
+          <h2 class="card-title">Tạo Video từ Mô tả (Text to Video)</h2>
+          <div class="form-group">
+            <label>Prompt chi tiết cảnh quay:</label>
+            <textarea id="tvPrompt" placeholder="Ví dụ: Cận cảnh một người đang dùng sản phẩm ngoài trời nắng nhẹ, phong cách điện ảnh chân thực..."></textarea>
+          </div>
+          <div class="form-group">
+            <label>Tỷ lệ khung hình:</label>
+            <select id="tvRatio">
+              <option value="9:16">Dọc 9:16 (TikTok, Reels, Shorts)</option>
+              <option value="16:9">Ngang 16:9 (YouTube standard)</option>
+            </select>
+          </div>
+          <button id="btnCreateTextVideo" class="btn btn-primary">Bắt đầu tạo Task</button>
+        </div>
+      </section>
+
+      <!-- 2. Image -> Video -->
+      <section id="image-video" class="tab-pane">
+        <div class="card">
+          <h2 class="card-title">Biến Ảnh thành Video (Image to Video)</h2>
+          <div class="form-group">
+            <label>Đường dẫn hoặc link ảnh sản phẩm:</label>
+            <input type="text" id="ivImage" placeholder="https://example.com/product.jpg">
+          </div>
+          <div class="form-group">
+            <label>Chuyển động (Motion Prompt):</label>
+            <textarea id="ivPrompt" placeholder="Zoom từ từ vào chi tiết sản phẩm, xoay 45 độ mượt mà..."></textarea>
+          </div>
+          <button id="btnCreateImageVideo" class="btn btn-primary">Tạo Task từ Ảnh</button>
+        </div>
+      </section>
+
+      <!-- 3. LadiPage Studio -->
+      <section id="ladipage" class="tab-pane">
+        <div class="card">
+          <h2 class="card-title">Tự động hóa Landing Page LadiPage</h2>
+          <div class="form-group">
+            <label>Link LadiPage sản phẩm:</label>
+            <input type="text" id="lpUrl" placeholder="https://ladipage.vn/san-pham-test">
+          </div>
+          <button id="btnCrawlLadi" class="btn btn-secondary">1. Quét thông tin trang</button>
+          <div id="lpResult" style="margin-top: 15px; display: none;">
+            <div class="form-group">
+              <label>Tiêu đề bóc tách:</label>
+              <input type="text" id="lpTitle">
+            </div>
+            <div class="form-group">
+              <label>Giá bán:</label>
+              <input type="text" id="lpPrice">
+            </div>
+            <button id="btnGenLadiScript" class="btn btn-primary">2. Tự sinh kịch bản 3 cảnh x 10s</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 4. Kho Video -->
+      <section id="videos" class="tab-pane">
+        <div class="card">
+          <h2 class="card-title">
+            <span>Hàng đợi & Kho Video đã Render</span>
+            <button id="btnRefreshTasks" class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;">Làm mới</button>
+          </h2>
+          <div id="taskList" class="task-list">
+            <p style="color: var(--text-muted);">Đang tải danh sách task...</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- 5. CRM / API Server -->
+      <section id="crm" class="tab-pane">
+        <div class="card">
+          <h2 class="card-title">Cấu hình Local REST API (Port 48900)</h2>
+          <p style="color: var(--text-muted); font-size: 13px; margin-bottom: 15px;">
+            Cung cấp API cho CRM/Web bên ngoài đẩy task tự động và tải file mp4.
+          </p>
+          <div class="form-group">
+            <label>Trạng thái Server:</label>
+            <span id="crmStatusBadge" class="badge badge-queued" style="width: fit-content;">ĐANG TẮT</span>
+          </div>
+          <div class="form-group">
+            <label>API Key xác thực (X-API-Key):</label>
+            <input type="text" id="crmApiKey" readonly value="musebatch-secret-key">
+          </div>
+          <button id="btnToggleCrm" class="btn btn-primary">Bật CRM Server</button>
+        </div>
+      </section>
+
+      <!-- 6. Tài khoản -->
+      <section id="accounts" class="tab-pane">
+        <div class="card">
+          <h2 class="card-title">Danh sách Tài khoản Muse & Proxy</h2>
+          <div id="accountsList" style="display: flex; flex-direction: column; gap: 10px;">
+            <p style="color: var(--text-muted);">Đang tải danh sách tài khoản...</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- 7. Cài đặt -->
+      <section id="settings" class="tab-pane">
+        <div class="card">
+          <h2 class="card-title">Cài đặt Hệ thống & Anti-ban Jitter</h2>
+          <div class="form-group">
+            <label>Số luồng chạy song song:</label>
+            <input type="number" id="cfgThreads" min="1" max="5" value="2">
+          </div>
+          <div class="form-group">
+            <label>Chế độ xoay vòng tài khoản:</label>
+            <select id="cfgMode">
+              <option value="rotate">Rotate (Xoay vòng đều)</option>
+              <option value="stack">Stack (Ưu tiên tài khoản còn nhiều quota nhất)</option>
+            </select>
+          </div>
+          <button id="btnSaveSettings" class="btn btn-primary">Lưu Cài đặt</button>
+        </div>
+      </section>
+
+      <!-- 8. Studio AI -->
+      <section id="studio" class="tab-pane">
+        <div class="card">
+          <h2 class="card-title">Studio AI Workspace</h2>
+          <p style="color: var(--text-muted); font-size: 13px;">
+            Workspace nâng cao để tinh chỉnh prompt 3 cảnh, điều chỉnh tốc độ nói TTS 4.6 từ/giây.
+          </p>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="script.js"></script>
+</body>
+</html>
