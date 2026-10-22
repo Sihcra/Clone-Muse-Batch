@@ -1,153 +1,141 @@
-'use strict'
-// task-store.js — JSON-based task persistence & state machine
-// Repository pattern: findAll, findById, create, update, remove
-// Atomic write: write .tmp then rename to prevent corruption
+'use strict';
+/**
+ * TASK STORE — lịch sử task, lưu ở userData/tasks.json (còn nguyên sau khi tắt app).
+ * Trạng thái: queued → processing → succeeded | failed | cancelled.
+ * Ảnh data: được ghi ra userData/task-images/ để JSON nhẹ và chạy lại được sau khi mở lại app.
+ */
 
-const fs = require('node:fs')
-const path = require('node:path')
-const { randomUUID } = require('node:crypto')
-const { MAX_TASKS, TASK_IMAGES_DIR } = require('./constants')
+const { EventEmitter } = require('events');
+const path = require('path');
+const fs = require('fs');
+const crypto = require('crypto');
+const { writeJsonAtomic, readJson } = require('./fs-util');
 
-class TaskStore {
-  /** @param {string} userDataDir */
-  constructor(userDataDir) {
-    this._file = path.join(userDataDir, 'tasks.json')
-    this._tmp = this._file + '.tmp'
-    this._imagesDir = path.join(userDataDir, TASK_IMAGES_DIR)
-    fs.mkdirSync(userDataDir, { recursive: true })
-    fs.mkdirSync(this._imagesDir, { recursive: true })
-    this._tasks = this._load()
+const RATIOS = ['9:16', '16:9', '1:1', '4:3', '3:4'];
+const MAX_TASKS = 500; // ghi lại cả file mỗi lần đổi → giữ vừa phải
+const ID_RE = /^[\w-]{1,40}$/;
+const THREAD_RE = /^https:\/\/muse\.ai\/thread\/[\w-]+$/;
+
+class TaskStore extends EventEmitter {
+  constructor(dir) {
+    super();
+    this.file = path.join(dir, 'tasks.json');
+    this.imgDir = path.join(dir, 'task-images');
+    const data = readJson(this.file, []);
+    this.tasks = Array.isArray(data) ? data : [];
+    // Task dở lúc tắt app: đã gửi Muse (có sessionId) → dò tiếp phiên đó; chưa gửi → xếp hàng lại.
+    for (const t of this.tasks) if (t.status === 'processing' && !t.sessionId) t.status = 'queued';
+    this.save();
   }
 
-  // ── Public API (Repository interface) ─────────────────────────────────────
+  save() {
+    clearTimeout(this.saveTimer);
+    this.saveTimer = setTimeout(() => this.flush(), 200);
+  }
 
-  /**
-   * @param {{ status?: string }} [filter]
-   * @returns {Task[]}
-   */
-  findAll(filter = {}) {
-    if (!filter.status) return [...this._tasks]
-    return this._tasks.filter(t => t.status === filter.status)
+  flush() {
+    clearTimeout(this.saveTimer);
+    try {
+      writeJsonAtomic(this.file, this.tasks);
+    } catch (e) {
+      console.error('[TaskStore] Không ghi được tasks.json:', e.message);
+    }
+  }
+
+  list(status) {
+    return status ? this.tasks.filter(t => t.status === status) : this.tasks;
+  }
+
+  get(id) {
+    return this.tasks.find(t => t.id === id);
+  }
+
+  // Ảnh đầu vào → { imageUrl, imageLocalPath } lưu được lâu dài
+  saveImage(img, id, k) {
+    const data = img.imageBase64 || img.dataUrl || '';
+    const m = /^data:image\/(\w+);base64,(.*)$/s.exec(data);
+    const local = img.imageLocalPath || '';
+    if (m) {
+      const file = path.join(this.imgDir, `${id}_${k}.${m[1] === 'jpeg' ? 'jpg' : m[1]}`);
+      fs.writeFileSync(file, Buffer.from(m[2], 'base64'));
+      return { imageUrl: '', imageLocalPath: file };
+    }
+    // Ảnh của task khác (Tạo lại / Sửa) hoặc của Tư liệu → chép riêng, vì xoá bên kia sẽ xoá mất ảnh
+    const shared = local.startsWith(this.imgDir) || local.includes(`${path.sep}studio-images${path.sep}`);
+    if (shared && fs.existsSync(local)) {
+      const file = path.join(this.imgDir, `${id}_${k}${path.extname(local)}`);
+      fs.copyFileSync(local, file);
+      return { imageUrl: '', imageLocalPath: file };
+    }
+    return { imageUrl: img.imageUrl || '', imageLocalPath: local };
   }
 
   /**
-   * @param {string} id
-   * @returns {Task|null}
+   * kind 'image': Muse tạo ảnh (storyboard), lấy `expect` ảnh. thread: làm tiếp trong chat Muse có sẵn.
+   * account: tài khoản giữ chat `thread` (chat thuộc về tài khoản). held: chỉ thêm vào hàng đợi, chưa chạy.
    */
-  findById(id) {
-    return this._tasks.find(t => t.id === id) ?? null
-  }
-
-  /**
-   * @param {Partial<Task>} data
-   * @returns {Task}
-   */
-  create(data) {
+  add({ prompt, images = [], timeoutMin = 10, source = 'ui', label = '', kind = 'video', expect = 1, thread = '', account = '', ratio = '', held = false, project = 'default' }) {
+    const id = 'task_' + crypto.randomBytes(8).toString('hex');
+    fs.mkdirSync(this.imgDir, { recursive: true });
+    const saved = (Array.isArray(images) ? images : []).map((img, k) => this.saveImage(img || {}, id, k));
     const task = {
-      id: randomUUID(),
-      source: data.source ?? 'ui',
-      label: data.label ?? '',
-      prompt: data.prompt ?? '',
-      images: data.images ?? [],
-      kind: data.kind ?? 'video',
-      ratio: data.ratio ?? '9:16',
-      sessionId: null,
-      accountId: null,
-      thread: null,
-      pin: false,
-      timeoutMin: data.timeoutMin ?? 10,
+      id,
+      source,
+      label: String(label || '').slice(0, 120),
+      prompt: String(prompt || ''),
+      images: saved,
+      kind: kind === 'image' ? 'image' : 'video',
+      expect: Math.min(Math.max(parseInt(expect, 10) || 1, 1), 6),
+      ratio: RATIOS.includes(ratio) ? ratio : '',
+      sessionId: '',
+      accountId: '',
+      held: held === true,
+      project: ID_RE.test(project) ? project : 'default',
+      thread: THREAD_RE.test(thread) ? thread : '',
+      pin: ID_RE.test(account) ? account : '',
+      timeoutMin: Math.min(Math.max(Number(timeoutMin) || 10, 2), 60),
       status: 'queued',
       attempts: 0,
-      createdAt: new Date().toISOString(),
-      startedAt: null,
-      finishedAt: null,
+      progress: 0,
+      step: '',
+      createdAt: Date.now(),
+      startedAt: 0,
+      finishedAt: 0,
       files: [],
-      error: null,
-      held: false,
-      project: data.project ?? null,
+      error: ''
+    };
+    this.tasks.unshift(task);
+    // Vượt giới hạn → bỏ bớt task cũ nhất đã kết thúc
+    while (this.tasks.length > MAX_TASKS) {
+      const i = this.tasks.findLastIndex(t => t.status !== 'queued' && t.status !== 'processing');
+      if (i < 0) break;
+      this.remove(this.tasks[i].id);
     }
-    this._tasks = [...this._tasks, task]
-    this._purge()
-    this._save()
-    return task
+    this.save();
+    this.emit('update', task);
+    return task;
   }
 
-  /**
-   * Returns a new task object — does NOT mutate the stored reference.
-   * @param {string} id
-   * @param {Partial<Task>} patch
-   * @returns {Task}
-   */
   update(id, patch) {
-    let updated = null
-    this._tasks = this._tasks.map(t => {
-      if (t.id !== id) return t
-      updated = { ...t, ...patch }
-      return updated
-    })
-    if (!updated) throw new Error(`Task not found: ${id}`)
-    this._save()
-    return updated
+    const task = this.get(id);
+    if (!task) return null;
+    Object.assign(task, patch);
+    this.save();
+    this.emit('update', task);
+    return task;
   }
 
-  /**
-   * @param {string} id
-   */
   remove(id) {
-    this._tasks = this._tasks.filter(t => t.id !== id)
-    this._save()
-  }
-
-  // ── Internal ──────────────────────────────────────────────────────────────
-
-  _load() {
-    try {
-      const raw = fs.readFileSync(this._file, 'utf8')
-      return JSON.parse(raw)
-    } catch {
-      return []
+    const task = this.get(id);
+    if (!task) return false;
+    for (const img of task.images) {
+      if (img.imageLocalPath && img.imageLocalPath.startsWith(this.imgDir)) fs.unlink(img.imageLocalPath, () => {});
     }
-  }
-
-  /** FIFO purge: keep only the newest MAX_TASKS tasks */
-  _purge() {
-    if (this._tasks.length > MAX_TASKS) {
-      this._tasks = this._tasks.slice(this._tasks.length - MAX_TASKS)
-    }
-  }
-
-  /** Atomic write: .tmp → rename */
-  _save() {
-    const json = JSON.stringify(this._tasks, null, 2)
-    fs.writeFileSync(this._tmp, json, 'utf8')
-    fs.renameSync(this._tmp, this._file)
+    this.tasks = this.tasks.filter(t => t !== task);
+    this.save();
+    this.emit('update', { id, removed: true });
+    return true;
   }
 }
 
-module.exports = TaskStore
-
-/**
- * @typedef {{
- *   id: string,
- *   source: string,
- *   label: string,
- *   prompt: string,
- *   images: string[],
- *   kind: 'video'|'image',
- *   ratio: string,
- *   sessionId: string|null,
- *   accountId: string|null,
- *   thread: string|null,
- *   pin: boolean,
- *   timeoutMin: number,
- *   status: 'queued'|'processing'|'succeeded'|'failed'|'cancelled',
- *   attempts: number,
- *   createdAt: string,
- *   startedAt: string|null,
- *   finishedAt: string|null,
- *   files: string[],
- *   error: string|null,
- *   held: boolean,
- *   project: string|null,
- * }} Task
- */
+module.exports = { TaskStore, RATIOS, MAX_TASKS };

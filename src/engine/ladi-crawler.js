@@ -1,153 +1,121 @@
-'use strict'
-// ladi-crawler.js — Scraper for LadiPage & E-commerce landing pages
-// ECC Rule: Strict timeout, clean URL resolution, safe cheerio selectors
-
-const cheerio = require('cheerio')
-
+'use strict';
 /**
- * Fetches HTML from a given URL with redirect and timeout handling.
- * @param {string} url
- * @param {number} [timeoutMs=15000]
- * @returns {Promise<string>}
+ * LADIPAGE CRAWLER — tải HTML trang bán hàng, bóc ảnh gốc (CDN), dòng giá, chính sách và các dòng chữ để sinh kịch bản.
  */
-async function fetchHtml(url, timeoutMs = 15_000) {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), timeoutMs)
 
-  try {
-    const res = await fetch(url, {
-      signal: controller.signal,
-      redirect: 'follow',
-      headers: {
-        'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      },
-    })
+const https = require('https');
+const http = require('http');
+const path = require('path');
 
-    if (!res.ok) {
-      throw new Error(`HTTP Error ${res.status}: ${res.statusText}`)
-    }
-    return await res.text()
-  } finally {
-    clearTimeout(timer)
-  }
-}
+const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
 
-/**
- * Extracts product images from HTML (img tags, data-src, background-image).
- * @param {string} html
- * @param {string} baseUrl
- * @returns {string[]}
- */
-function extractImages(html, baseUrl = '') {
-  const $ = cheerio.load(html)
-  const set = new Set()
-
-  const resolve = (u) => {
-    if (!u) return null
-    try {
-      return new URL(u.trim(), baseUrl || 'https://localhost').href
-    } catch {
-      return null
-    }
-  }
-
-  // 1. <img> src and data-src
-  $('img').each((_, el) => {
-    const src = $(el).attr('src') || $(el).attr('data-src') || $(el).attr('data-original')
-    const full = resolve(src)
-    if (full && !full.startsWith('data:') && !full.includes('icon') && !full.includes('logo')) {
-      set.add(full)
-    }
-  })
-
-  // 2. CSS background-image
-  $('[style*="background"]').each((_, el) => {
-    const style = $(el).attr('style') || ''
-    const match = style.match(/url\(['"]?([^'")]+)['"]?\)/i)
-    if (match && match[1]) {
-      const full = resolve(match[1])
-      if (full && !full.startsWith('data:')) {
-        set.add(full)
+function fetchHtml(url, hops = 0) {
+  return new Promise((resolve, reject) => {
+    if (hops > 5) return reject(new Error('Chuyển hướng quá nhiều lần'));
+    const client = url.startsWith('https') ? https : http;
+    const req = client.get(url, {
+      headers: { 'User-Agent': UA, Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8', 'Accept-Language': 'vi,en;q=0.9' }
+    }, res => {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        res.resume();
+        return fetchHtml(new URL(res.headers.location, url).href, hops + 1).then(resolve, reject);
       }
-    }
-  })
-
-  return Array.from(set)
+      if (res.statusCode !== 200) {
+        res.resume();
+        return reject(new Error(`HTTP Error ${res.statusCode}`));
+      }
+      res.setEncoding('utf8');
+      let data = '';
+      res.on('data', c => { data += c; });
+      res.on('end', () => resolve({ html: data, finalUrl: url }));
+    });
+    req.on('error', reject);
+    req.setTimeout(15000, () => req.destroy(new Error('Hết thời gian chờ kết nối (Timeout 15s)')));
+  });
 }
 
-/**
- * Extracts product title, prices, and benefits from landing page HTML.
- * @param {string} html
- * @returns {{ title: string, price: string, benefits: string }}
- */
-function extractText(html) {
-  const $ = cheerio.load(html)
-
-  // 1. Title
-  let title =
-    $('h1').first().text().trim() ||
-    $('meta[property="og:title"]').attr('content') ||
-    $('title').text().trim() ||
-    'Sản phẩm mới'
-
-  // Clean title (remove trailing site names)
-  title = title.split(/[-–|]/)[0].trim()
-
-  // 2. Price
-  let price = ''
-  const priceRegex = /(\d{1,3}(?:\.\d{3})+|\d{1,3}k)\s*(?:đ|d|đồng|vnd)?/i
-
-  // Look for elements with price in class or text
-  $('[class*="price"], [id*="price"], span, strong, b').each((_, el) => {
-    if (price) return
-    const text = $(el).text().trim()
-    const match = text.match(priceRegex)
-    if (match && !text.includes('100%')) {
-      price = match[0]
-    }
-  })
-
-  // 3. Benefits / Descriptions
-  const benefits = []
-  $('p, li, .desc, .description').each((_, el) => {
-    if (benefits.length >= 3) return
-    const text = $(el).text().trim()
-    if (text.length > 20 && text.length < 150) {
-      benefits.push(text)
-    }
-  })
-
-  return {
-    title,
-    price,
-    benefits: benefits.join('. '),
+// Gốc để ghép link ảnh tương đối: ưu tiên <base href>, path không có đuôi file thì coi là thư mục
+function baseUrlOf(url, html = '') {
+  const m = /<base[^>]+href=["']([^"']+)["']/i.exec(html);
+  if (m) { try { return new URL(m[1], url).href; } catch {} }
+  try {
+    const u = new URL(url);
+    if (!u.pathname.endsWith('/') && !path.extname(u.pathname)) u.pathname += '/';
+    return u.href;
+  } catch {
+    return url.endsWith('/') ? url : url + '/';
   }
 }
 
-/**
- * Main scrape function.
- * @param {string} url
- * @returns {Promise<{ url: string, title: string, price: string, benefits: string, images: string[] }>}
- */
-async function scrapeLadiPage(url) {
-  const html = await fetchHtml(url)
-  const textData = extractText(html)
-  const images = extractImages(html, url)
+function isProductImage(url) {
+  if (!url || typeof url !== 'string' || url.startsWith('data:image')) return false;
+  if (/icon|logo|badge|avatar|star|pixel|spacer|arrow|svg|loading/i.test(url)) return false;
+  return /\.(jpg|jpeg|png|webp|avif)/i.test(url) || url.includes('ladicdn.com') || url.includes('static.ladipage');
+}
 
+function absUrl(url, base) {
+  if (url.startsWith('//')) return 'https:' + url;
+  if (/^https?:/i.test(url)) return url;
+  try { return new URL(url, base).href; } catch { return url; }
+}
+
+function extractImages(html, base) {
+  const found = new Set();
+  const patterns = [
+    /<img[^>]+(?:src|data-src|data-original)=["']([^"']+)["']/gi,
+    /background(?:-image)?:\s*url\(['"]?([^'")]+)['"]?\)/gi, // LadiPage dùng nhiều div.ladi-image-background
+    /data-background-image=["']([^"']+)["']/gi
+  ];
+  for (const re of patterns) {
+    let m;
+    while ((m = re.exec(html))) {
+      const src = m[1].trim();
+      if (isProductImage(src)) found.add(absUrl(src, base));
+    }
+  }
+  return [...found];
+}
+
+const stripBlocks = html => html
+  .replace(/<script\b[\s\S]*?<\/script>/gi, '')
+  .replace(/<style\b[\s\S]*?<\/style>/gi, '')
+  .replace(/<svg\b[\s\S]*?<\/svg>/gi, '');
+
+function extractTexts(html) {
+  const lines = [];
+  const re = />([^<]+)</g;
+  const clean = stripBlocks(html);
+  let m;
+  while ((m = re.exec(clean))) {
+    const t = m[1].replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim();
+    if (t.length > 2 && t.length < 500) lines.push(t);
+  }
+  return lines;
+}
+
+const PRICE_LINE = /(\b\d{1,3}(?:[.,]\d{3})+(?:\s*(?:đ|vnđ|k|đồng))|\b\d{2,4}\s*(?:k|vnđ|đ)\b)/i;
+const extractPricing = lines => [...new Set(lines.filter(l => PRICE_LINE.test(l) && l.length < 100))].slice(0, 8);
+
+const POLICY = [/miễn\s*phí\s*vận\s*chuyển/i, /freeship/i, /kiểm\s*tra\s*hàng/i, /đồng\s*kiểm/i, /thanh\s*toán\s*khi\s*nhận/i,
+  /đổi\s*trả/i, /bảo\s*hành/i, /cam\s*kết/i, /hoàn\s*tiền/i, /quà\s*tặng/i];
+const extractPolicies = lines => [...new Set(lines.filter(l => l.length < 150 && POLICY.some(re => re.test(l))))].slice(0, 6);
+
+function parsePage(html, url) {
+  const t = /<title>([^<]+)<\/title>/i.exec(html);
+  const lines = extractTexts(html);
   return {
     url,
-    title: textData.title,
-    price: textData.price,
-    benefits: textData.benefits,
-    images: images.slice(0, 15), // Top 15 images
-  }
+    title: t ? t[1].trim() : 'Sản phẩm LadiPage',
+    images: extractImages(html, baseUrlOf(url, html)).slice(0, 24),
+    prices: extractPricing(lines),
+    policies: extractPolicies(lines),
+    textSnippet: lines.slice(0, 100).join('\n')
+  };
 }
 
-module.exports = {
-  fetchHtml,
-  extractImages,
-  extractText,
-  scrapeLadiPage,
+async function scrapeLadiPage(url) {
+  const { html, finalUrl } = await fetchHtml(url);
+  return { ...parsePage(html, finalUrl || url), url };
 }
+
+module.exports = { scrapeLadiPage, parsePage, extractImages, extractTexts, baseUrlOf };

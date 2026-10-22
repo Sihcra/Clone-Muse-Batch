@@ -1,134 +1,108 @@
-'use strict'
-// accounts.js — Multi-account credentials, proxies & settings store
-// Repository pattern: atomic writes, guarantees default account presence
+'use strict';
+/**
+ * ACCOUNT STORE — các tài khoản Muse + cài đặt chạy song song, lưu ở userData/accounts.json.
+ * Mỗi tài khoản 1 Chrome riêng với profile userData/profiles/<id>. Luôn còn ít nhất 1 tài khoản.
+ */
 
-const fs = require('node:fs')
-const path = require('node:path')
-const { DEFAULT_ACCOUNT_ID, DEFAULT_SETTINGS } = require('./constants')
+const { EventEmitter } = require('events');
+const path = require('path');
+const fs = require('fs');
+const crypto = require('crypto');
+const { writeJsonAtomic } = require('./fs-util');
 
-class AccountStore {
-  /** @param {string} userDataDir */
-  constructor(userDataDir) {
-    this._dir = userDataDir
-    this._accFile = path.join(userDataDir, 'accounts.json')
-    this._setFile = path.join(userDataDir, 'settings.json')
-    fs.mkdirSync(userDataDir, { recursive: true })
+const DEFAULT_SETTINGS = { maxAccounts: 2, totalThreads: 2, mode: 'rotate', useTopup: true, keepGoing: false, proxies: '', usePool: false };
+const clamp = (v, lo, hi, def) => Math.min(Math.max(parseInt(v, 10) || def, lo), hi);
 
-    this._accounts = this._loadAccounts()
-    this._settings = this._loadSettings()
+function cleanSettings(s = {}) {
+  return {
+    maxAccounts: clamp(s.maxAccounts ?? DEFAULT_SETTINGS.maxAccounts, 1, 20, 1),
+    totalThreads: clamp(s.totalThreads ?? DEFAULT_SETTINGS.totalThreads, 1, 50, 1),
+    mode: s.mode === 'sequential' ? 'sequential' : 'rotate',
+    useTopup: s.useTopup ?? DEFAULT_SETTINGS.useTopup,
+    keepGoing: s.keepGoing ?? DEFAULT_SETTINGS.keepGoing,
+    proxies: String(s.proxies ?? '').slice(0, 20000), // mỗi dòng 1 proxy, xem proxy.js
+    // Công tắc kho proxy dự phòng; dữ liệu cũ đã có danh sách → coi như bật
+    usePool: Boolean(s.usePool ?? String(s.proxies ?? '').trim())
+  };
+}
+
+function cleanAccount(a) {
+  return {
+    id: a.id,
+    name: String(a.name || a.id).slice(0, 60),
+    enabled: a.enabled !== false,
+    threads: clamp(a.threads ?? 1, 1, 5, 1),
+    loggedIn: a.loggedIn ?? null, // null = chưa kiểm tra
+    quota: a.quota || null,
+    lastUsedAt: a.lastUsedAt || 0,
+    // proxy: '' = tự lấy từ kho, 'none' = không dùng, còn lại = 1 dòng proxy cố định
+    // proxyAuto: proxy đang được tự chọn cho tài khoản này (giữ cố định tới khi chết)
+    proxy: String(a.proxy || '').slice(0, 300),
+    proxyAuto: String(a.proxyAuto || '').slice(0, 300)
+  };
+}
+
+class AccountStore extends EventEmitter {
+  constructor(dir) {
+    super();
+    this.file = path.join(dir, 'accounts.json');
+    let data = {};
+    try { data = JSON.parse(fs.readFileSync(this.file, 'utf8')) || {}; } catch {}
+    this.settings = cleanSettings(data.settings);
+    this.accounts = (Array.isArray(data.accounts) ? data.accounts : [])
+      .filter(a => a && typeof a.id === 'string' && a.id)
+      .map(cleanAccount);
+    if (!this.accounts.length) this.accounts = [cleanAccount({ id: 'default', name: 'Tài khoản 1' })];
   }
 
-  // ── Accounts ──────────────────────────────────────────────────────────────
-
-  getAccounts() {
-    return [...this._accounts]
+  changed() {
+    clearTimeout(this.saveTimer);
+    this.saveTimer = setTimeout(() => this.flush(), 200);
+    this.emit('change');
   }
 
-  getAccount(id) {
-    return this._accounts.find(a => a.id === id) ?? null
-  }
-
-  saveAccount(acc) {
-    if (!acc.id) throw new Error('Account id is required')
-    const existingIdx = this._accounts.findIndex(a => a.id === acc.id)
-    if (existingIdx >= 0) {
-      this._accounts[existingIdx] = { ...this._accounts[existingIdx], ...acc }
-    } else {
-      this._accounts.push({
-        id: acc.id,
-        name: acc.name ?? acc.id,
-        enabled: acc.enabled ?? true,
-        threads: acc.threads ?? 1,
-        loggedIn: acc.loggedIn ?? false,
-        quota: acc.quota ?? { weekly: 0, used: 0, resetAt: 0 },
-        lastUsedAt: acc.lastUsedAt ?? 0,
-        proxy: acc.proxy ?? '',
-        proxyAuto: acc.proxyAuto ?? false,
-      })
-    }
-    this._saveAccounts()
-    return this.getAccount(acc.id)
-  }
-
-  updateAccount(id, patch) {
-    let updated = null
-    this._accounts = this._accounts.map(a => {
-      if (a.id !== id) return a
-      updated = { ...a, ...patch }
-      return updated
-    })
-    if (!updated) throw new Error(`Account not found: ${id}`)
-    this._saveAccounts()
-    return updated
-  }
-
-  deleteAccount(id) {
-    if (this._accounts.length <= 1) {
-      throw new Error('Cannot delete the last remaining account')
-    }
-    this._accounts = this._accounts.filter(a => a.id !== id)
-    this._saveAccounts()
-    return true
-  }
-
-  // ── Settings ──────────────────────────────────────────────────────────────
-
-  getSettings() {
-    return { ...this._settings }
-  }
-
-  saveSettings(patch) {
-    this._settings = { ...this._settings, ...patch }
-    this._saveSettings()
-    return this.getSettings()
-  }
-
-  // ── Persistence ───────────────────────────────────────────────────────────
-
-  _loadAccounts() {
+  flush() {
+    clearTimeout(this.saveTimer);
     try {
-      const data = JSON.parse(fs.readFileSync(this._accFile, 'utf8'))
-      if (Array.isArray(data) && data.length > 0) return data
-    } catch {}
-
-    const defaultAcc = [{
-      id: DEFAULT_ACCOUNT_ID,
-      name: 'Mặc định',
-      enabled: true,
-      threads: 1,
-      loggedIn: false,
-      quota: { weekly: 0, used: 0, resetAt: 0 },
-      lastUsedAt: 0,
-      proxy: '',
-      proxyAuto: false,
-    }]
-    this._atomicWrite(this._accFile, defaultAcc)
-    return defaultAcc
-  }
-
-  _loadSettings() {
-    try {
-      const data = JSON.parse(fs.readFileSync(this._setFile, 'utf8'))
-      return { ...DEFAULT_SETTINGS, ...data }
-    } catch {
-      this._atomicWrite(this._setFile, DEFAULT_SETTINGS)
-      return { ...DEFAULT_SETTINGS }
+      writeJsonAtomic(this.file, { settings: this.settings, accounts: this.accounts }, 1);
+    } catch (e) {
+      console.error('[AccountStore] Không ghi được accounts.json:', e.message);
     }
   }
 
-  _saveAccounts() {
-    this._atomicWrite(this._accFile, this._accounts)
+  list() { return this.accounts; }
+  get(id) { return this.accounts.find(a => a.id === id); }
+
+  add(name) {
+    const acc = cleanAccount({
+      id: 'acc_' + crypto.randomBytes(4).toString('hex'),
+      name: String(name || '').trim() || `Tài khoản ${this.accounts.length + 1}`
+    });
+    this.accounts.push(acc);
+    this.changed();
+    return acc;
   }
 
-  _saveSettings() {
-    this._atomicWrite(this._setFile, this._settings)
+  update(id, patch) {
+    const i = this.accounts.findIndex(a => a.id === id);
+    if (i < 0) return null;
+    this.accounts[i] = cleanAccount({ ...this.accounts[i], ...patch, id });
+    this.changed();
+    return this.accounts[i];
   }
 
-  _atomicWrite(filePath, data) {
-    const tmp = filePath + '.tmp'
-    fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8')
-    fs.renameSync(tmp, filePath)
+  remove(id) {
+    if (this.accounts.length <= 1 || !this.get(id)) return false;
+    this.accounts = this.accounts.filter(a => a.id !== id);
+    this.changed();
+    return true;
+  }
+
+  setSettings(patch) {
+    this.settings = cleanSettings({ ...this.settings, ...patch });
+    this.changed();
+    return this.settings;
   }
 }
 
-module.exports = AccountStore
+module.exports = { AccountStore, DEFAULT_SETTINGS, cleanSettings, cleanAccount };

@@ -1,100 +1,82 @@
-'use strict'
-// scheduler.test.js — TDD for pure scheduler logic
-const { describe, it } = require('node:test')
-const assert = require('node:assert/strict')
-const {
-  weeklyOut,
-  pausedUntil,
-  isUsable,
-  plan,
-} = require('../src/engine/scheduler')
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const { plan, pausedUntil, weeklyOut, usable } = require('../src/engine/scheduler');
 
-describe('Scheduler (Pure Logic)', () => {
-  describe('weeklyOut()', () => {
-    it('returns true when used >= weekly', () => {
-      assert.equal(weeklyOut({ weekly: 100, used: 100 }), true)
-      assert.equal(weeklyOut({ weekly: 100, used: 105 }), true)
-    })
+const S = { maxAccounts: 5, totalThreads: 5, mode: 'rotate', useTopup: true, keepGoing: false };
+const acc = (id, extra = {}) => ({ id, enabled: true, threads: 1, loggedIn: true, quota: null, lastUsedAt: 0, ...extra });
+const task = (id, extra = {}) => ({ id, status: 'queued', createdAt: 0, sessionId: '', accountId: '', ...extra });
 
-    it('returns false when used < weekly or quota missing', () => {
-      assert.equal(weeklyOut({ weekly: 100, used: 99 }), false)
-      assert.equal(weeklyOut(null), false)
-      assert.equal(weeklyOut({}), false)
-    })
-  })
+test('weeklyOut: 100% hoặc trạng thái hết', () => {
+  assert.equal(weeklyOut(null), false);
+  assert.equal(weeklyOut({ pct: 100 }), true);
+  assert.equal(weeklyOut({ pct: 20, status: 'EXHAUSTED' }), true);
+  assert.equal(weeklyOut({ pct: 90, status: 'LOW' }), false);
+});
 
-  describe('isUsable()', () => {
-    it('returns false if account is disabled or not logged in', () => {
-      const now = Date.now()
-      assert.equal(isUsable({ enabled: false, loggedIn: true }, {}, now), false)
-      assert.equal(isUsable({ enabled: true, loggedIn: false }, {}, now), false)
-    })
+test('pausedUntil: còn token bổ sung thì không nghỉ, keepGoing thì không nghỉ, qua mốc đặt lại thì không nghỉ', () => {
+  const now = 1000;
+  const out = { pct: 100, resetsAt: 5000, topupLeft: 0 };
+  assert.equal(pausedUntil({ quota: out }, S, now), 5000);
+  assert.equal(pausedUntil({ quota: { ...out, topupLeft: 0.4 } }, S, now), 0);
+  assert.equal(pausedUntil({ quota: { ...out, topupLeft: 0.4 } }, { ...S, useTopup: false }, now), 5000);
+  assert.equal(pausedUntil({ quota: out }, { ...S, keepGoing: true }, now), 0);
+  assert.equal(pausedUntil({ quota: { ...out, resetsAt: 500 } }, S, now), 0);
+  assert.equal(pausedUntil({ quota: { pct: 100 } }, S, now), Infinity);
+});
 
-    it('returns false if account is paused due to quota exhaustion', () => {
-      const now = Date.now()
-      const acc = {
-        enabled: true,
-        loggedIn: true,
-        quota: { weekly: 10, used: 10, resetAt: now + 60_000 },
-      }
-      assert.equal(isUsable(acc, { keepGoing: false }, now), false)
-    })
+test('usable: tắt / chưa đăng nhập / đang nghỉ thì không dùng', () => {
+  assert.equal(usable(acc('a'), S, 0), true);
+  assert.equal(usable(acc('a', { enabled: false }), S, 0), false);
+  assert.equal(usable(acc('a', { loggedIn: false }), S, 0), false);
+  assert.equal(usable(acc('a', { loggedIn: null }), S, 0), true);
+  assert.equal(usable(acc('a', { quota: { pct: 100, resetsAt: 99 } }), S, 0), false);
+});
 
-    it('returns true when valid and has quota', () => {
-      const now = Date.now()
-      const acc = {
-        enabled: true,
-        loggedIn: true,
-        quota: { weekly: 10, used: 5 },
-      }
-      assert.equal(isUsable(acc, {}, now), true)
-    })
-  })
+test('task dở chỉ dò tiếp trên đúng tài khoản đã gửi', () => {
+  const out = plan({
+    tasks: [task('t1', { status: 'processing', sessionId: 's', accountId: 'b' })],
+    accounts: [acc('a'), acc('b')], settings: S, running: new Map(), now: 0
+  });
+  assert.deepEqual(out, [{ taskId: 't1', accountId: 'b' }]);
+});
 
-  describe('plan() matchmaking', () => {
-    const settings = { maxAccounts: 2, totalThreads: 2, mode: 'rotate', keepGoing: false }
-    const now = 1700000000000
+test('chia task cho tài khoản ít việc → ít hạn mức đã dùng → lâu chưa dùng', () => {
+  const out = plan({
+    tasks: [task('t1', { createdAt: 1 }), task('t2', { createdAt: 2 })],
+    accounts: [acc('a', { quota: { pct: 50 } }), acc('b', { quota: { pct: 10 } })], settings: S, running: new Map(), now: 0
+  });
+  assert.deepEqual(out, [{ taskId: 't1', accountId: 'b' }, { taskId: 't2', accountId: 'a' }]);
+});
 
-    it('pairs in-progress task with its assigned account if usable', () => {
-      const tasks = [
-        { id: 't1', status: 'processing', sessionId: 's123', accountId: 'acc1' }
-      ]
-      const accounts = [
-        { id: 'acc1', enabled: true, loggedIn: true, threads: 2 }
-      ]
-      const pairs = plan({ tasks, accounts, settings, runningTasks: [], now })
-      assert.equal(pairs.length, 1)
-      assert.equal(pairs[0].task.id, 't1')
-      assert.equal(pairs[0].accountId, 'acc1')
-    })
+test('chế độ Lần lượt giữ thứ tự danh sách, tôn trọng số luồng từng TK', () => {
+  const out = plan({
+    tasks: [task('t1', { createdAt: 1 }), task('t2', { createdAt: 2 }), task('t3', { createdAt: 3 })],
+    accounts: [acc('a', { threads: 2, quota: { pct: 90 } }), acc('b')], settings: { ...S, mode: 'sequential' }, running: new Map(), now: 0
+  });
+  assert.deepEqual(out.map(p => p.accountId), ['a', 'a', 'b']);
+});
 
-    it('prioritizes accounts with lowest quota usage and oldest lastUsedAt', () => {
-      const tasks = [
-        { id: 't2', status: 'queued', sessionId: null }
-      ]
-      const accounts = [
-        { id: 'acc1', enabled: true, loggedIn: true, threads: 1, lastUsedAt: 1000, quota: { weekly: 10, used: 5 } },
-        { id: 'acc2', enabled: true, loggedIn: true, threads: 1, lastUsedAt: 500, quota: { weekly: 10, used: 2 } }
-      ]
-      const pairs = plan({ tasks, accounts, settings, runningTasks: [], now })
-      assert.equal(pairs.length, 1)
-      assert.equal(pairs[0].accountId, 'acc2') // acc2 has more quota remaining (20% used vs 50% used)
-    })
+test('giới hạn tổng luồng và số tài khoản chạy đồng thời', () => {
+  const tasks = [1, 2, 3, 4].map(i => task('t' + i, { createdAt: i }));
+  const accounts = [acc('a', { threads: 3 }), acc('b', { threads: 3 })];
+  assert.equal(plan({ tasks, accounts, settings: { ...S, totalThreads: 2 }, running: new Map(), now: 0 }).length, 2);
+  const one = plan({ tasks, accounts, settings: { ...S, maxAccounts: 1 }, running: new Map(), now: 0 });
+  assert.equal(new Set(one.map(p => p.accountId)).size, 1);
+});
 
-    it('respects account concurrency / threads limit', () => {
-      const tasks = [
-        { id: 't1', status: 'queued' },
-        { id: 't2', status: 'queued' }
-      ]
-      const accounts = [
-        { id: 'acc1', enabled: true, loggedIn: true, threads: 1 }
-      ]
-      const runningTasks = [
-        { id: 'r1', accountId: 'acc1' }
-      ]
-      const pairs = plan({ tasks, accounts, settings, runningTasks, now })
-      // acc1 thread capacity is 1, and 1 task is already running on acc1
-      assert.equal(pairs.length, 0)
-    })
-  })
-})
+test('task giữ (held) không chạy; task đang chạy không bị chia lại', () => {
+  const out = plan({
+    tasks: [task('t1', { held: true }), task('t2', { createdAt: 1 })],
+    accounts: [acc('a', { threads: 2 })], settings: S, running: new Map([['t2', 'a']]), now: 0
+  });
+  assert.deepEqual(out, []);
+});
+
+test('task làm tiếp chat cũ chờ đúng tài khoản giữ chat; TK đó hỏng thì TK khác làm', () => {
+  const pinned = task('t1', { thread: 'https://muse.ai/thread/x', pin: 'b' });
+  const busyB = plan({ tasks: [pinned, task('t2', { createdAt: 1 })], accounts: [acc('a'), acc('b')], settings: S, running: new Map([['zz', 'b']]), now: 0 });
+  assert.deepEqual(busyB, [{ taskId: 't2', accountId: 'a' }]);
+  const deadB = plan({ tasks: [pinned], accounts: [acc('a'), acc('b', { loggedIn: false })], settings: S, running: new Map(), now: 0 });
+  assert.deepEqual(deadB, [{ taskId: 't1', accountId: 'a' }]);
+});
