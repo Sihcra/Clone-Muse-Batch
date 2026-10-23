@@ -9,15 +9,25 @@
   const subs = [];
 
   // Hỏi tên (Electron không có window.prompt)
+  // Enter = Lưu (chặn submit mặc định để không bao giờ đóng hộp mà mất chữ); Huỷ / Esc = bỏ
   function askName(title, value = '') {
     const dlg = $('name-dlg');
+    const input = $('name-dlg-input');
     $('name-dlg-title').textContent = title;
-    $('name-dlg-input').value = value;
+    input.value = value;
+    dlg.returnValue = '';
     dlg.showModal();
+    input.focus();
+    input.select();
     return new Promise(resolve => dlg.addEventListener('close', () => {
-      resolve(dlg.returnValue === 'ok' ? $('name-dlg-input').value.trim() : '');
+      resolve(dlg.returnValue === 'ok' ? input.value.trim() : '');
     }, { once: true }));
   }
+  $('name-dlg').querySelector('form').addEventListener('submit', e => {
+    e.preventDefault();
+    if (!$('name-dlg-input').value.trim()) { toast('Tên không được để trống.', 'warn'); $('name-dlg-input').focus(); return; }
+    $('name-dlg').close('ok');
+  });
 
   async function pickImages(room) {
     const files = (await api.selectImageFile(true)) || [];
@@ -73,12 +83,12 @@
   // ---------- Tư liệu ----------
   function renderAssets() {
     $('as-chars').innerHTML = data.characters.length ? data.characters.map((c, k) => `<div class="as-item" data-k="${k}">
-        <div class="as-item-head"><input class="input" value="${escapeHtml(c.name)}" data-f="name" placeholder="Tên (viết trong prompt)"><button type="button" class="btn-ghost btn-sm" data-del="char">Xoá</button></div>
+        <div class="as-item-head"><input class="input" value="${escapeHtml(c.name)}" data-f="name" placeholder="Tên (viết trong prompt)"><button type="button" class="btn btn-sm" data-save="char">Lưu</button><button type="button" class="btn-danger btn-sm" data-del="char">Xoá</button></div>
         <div class="img-strip">${strip(c.images, 3, 'char')}</div>
       </div>`).join('') : '<p class="muted small">Chưa có nhân vật. Prompt có tên nhân vật (viết hoa đúng như tên, hoặc @tên) sẽ tự gắn ảnh của họ. Ảnh đẹp ở Thư viện cũng lưu thẳng vào đây được.</p>';
     $('as-tpls').innerHTML = data.templates.length ? data.templates.map((t, k) => `<div class="as-item" data-k="${k}">
-        <div class="as-item-head"><input class="input" value="${escapeHtml(t.name)}" data-f="name" placeholder="Tên mẫu"><button type="button" class="btn-ghost btn-sm" data-del="tpl">Xoá</button></div>
-        <textarea class="textarea" rows="3" data-f="text" placeholder="Nội dung mẫu">${escapeHtml(t.text)}</textarea>
+        <div class="as-item-head"><input class="input" value="${escapeHtml(t.name)}" data-f="name" placeholder="Tên mẫu"><button type="button" class="btn btn-sm" data-save="tpl">Lưu</button><button type="button" class="btn-danger btn-sm" data-del="tpl">Xoá</button></div>
+        <textarea class="textarea" rows="3" data-f="text" placeholder="Nội dung mẫu (Ctrl+Enter để lưu)">${escapeHtml(t.text)}</textarea>
       </div>`).join('') : '<p class="muted small">Chưa có mẫu. Có thể lưu từ ô prompt ở Studio.</p>';
     $('as-model-on').checked = data.model.on;
     $('as-model').innerHTML = strip(data.model.images, 3, 'model');
@@ -107,9 +117,30 @@
     const list = (inChars ? data.characters : data.templates).map((x, i) => (i === k ? { ...x, [f]: e.target.value } : x));
     save(inChars ? { characters: list } : { templates: list });
   });
+  // Lưu cả thẻ (tên + nội dung) bằng nút Lưu, Enter ở ô tên hoặc Ctrl+Enter ở ô nội dung
+  function saveItem(item) {
+    const k = +item.dataset.k;
+    const inChars = Boolean(item.closest('#as-chars'));
+    const name = item.querySelector('[data-f="name"]').value.trim();
+    if (!name) { toast('Tên không được để trống.', 'warn'); return; }
+    if (inChars) save({ characters: data.characters.map((c, i) => (i === k ? { ...c, name } : c)) });
+    else save({ templates: data.templates.map((x, i) => (i === k ? { ...x, name, text: item.querySelector('[data-f="text"]').value } : x)) });
+    document.activeElement?.blur();
+    toast('Đã lưu.', 'ok');
+  }
+  tab.addEventListener('keydown', e => {
+    const item = e.target.closest('.as-item');
+    if (!item || e.key !== 'Enter') return;
+    if (e.target.dataset.f === 'name' || (e.target.dataset.f === 'text' && (e.ctrlKey || e.metaKey))) {
+      e.preventDefault();
+      saveItem(item);
+    }
+  });
+
   tab.addEventListener('click', async e => {
     const t = e.target;
     const k = +t.closest('[data-k]')?.dataset.k;
+    if (t.dataset.save) return saveItem(t.closest('.as-item'));
     if (t.id === 'as-char-add') {
       const name = await askName('Tên nhân vật (viết đúng như trong prompt)');
       if (name) save({ characters: [...data.characters, { id: '', name, images: [] }] });
