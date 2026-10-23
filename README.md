@@ -41,6 +41,30 @@ npm run dist
 
 Bộ cài NSIS nằm trong `dist\`. Nhớ chép ffmpeg vào `resources\bin` trước khi build.
 
+## Build cho macOS (file .dmg)
+
+Làm theo từng bước, không cần biết lập trình:
+
+1. Mở **Terminal** (Cmd + Space, gõ `Terminal`, Enter).
+2. Cài **Homebrew** nếu máy chưa có: dán lệnh ở https://brew.sh vào Terminal, Enter, làm theo hướng dẫn. Máy đã có thì bỏ qua.
+3. Kéo thư mục dự án vào cửa sổ Terminal, Enter. Rồi chạy:
+
+   ```bash
+   bash scripts/build-mac.sh
+   ```
+
+4. Đợi xong (lần đầu khoảng 5–15 phút, tuỳ mạng). Script tự cài Node.js và ffmpeg nếu thiếu, build xong sẽ mở thư mục `dist` trong Finder.
+5. Mở file `MuseBatch Studio-...dmg`, kéo app vào thư mục **Applications**.
+
+**Lần mở đầu tiên:** app chưa có chữ ký của Apple nên macOS có thể chặn. Chuột phải vào app trong Applications → **Open** → **Open**.
+Nếu vẫn bị chặn, mở Terminal và chạy:
+
+```bash
+xattr -cr "/Applications/MuseBatch Studio.app"
+```
+
+Máy mac cần cài **Google Chrome** (app dùng Chrome thật để chạy Muse). Ghép video cần ffmpeg, script đã cài sẵn qua Homebrew.
+
 ## Dữ liệu
 
 Lưu trong `%APPDATA%\MuseBatch Studio`: `accounts.json`, `tasks.json`, `studio.json`, `queue.json`, `user_config.json`,
