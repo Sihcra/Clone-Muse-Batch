@@ -33,13 +33,47 @@ shared (Windows x64) vào `resources\bin` (thư mục này không đưa lên git
 npm test
 ```
 
-## Đóng gói bộ cài
+## Build cho Windows (file .exe)
+
+Làm theo từng bước:
+
+1. Cài **Node.js** LTS từ https://nodejs.org (bấm Next đến hết). Máy đã có thì bỏ qua.
+2. Chép ffmpeg vào `resources\bin`: lấy `ffmpeg.exe`, `ffprobe.exe` và tất cả file `.dll` của ffmpeg rồi dán vào `resources\bin` của dự án. Thiếu bước này script sẽ báo lỗi và dừng.
+3. Mở **PowerShell** trong thư mục dự án (bấm vào thanh địa chỉ của thư mục, gõ `powershell`, Enter), rồi chạy:
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File scripts\build-win.ps1
+   ```
+
+4. Đợi xong, thư mục `dist` sẽ tự mở. Chạy file `MuseBatch Studio Setup ... .exe` để cài.
+
+Windows có thể hỏi "Windows protected your PC" vì app chưa ký: bấm **More info** → **Run anyway**.
+
+Ghi chú: script này chưa chạy thử trên Windows trong lúc viết (làm trên Linux), nên lần đầu chạy có lỗi thì báo lại.
+
+## Build cho macOS (file .dmg)
+
+Làm theo từng bước, không cần biết lập trình:
+
+1. Mở **Terminal** (Cmd + Space, gõ `Terminal`, Enter).
+2. Cài **Homebrew** nếu máy chưa có: dán lệnh ở https://brew.sh vào Terminal, Enter, làm theo hướng dẫn. Máy đã có thì bỏ qua.
+3. Kéo thư mục dự án vào cửa sổ Terminal, Enter. Rồi chạy:
+
+   ```bash
+   bash scripts/build-mac.sh
+   ```
+
+4. Đợi xong (lần đầu khoảng 5–15 phút, tuỳ mạng). Script tự cài Node.js và ffmpeg nếu thiếu, build xong sẽ mở thư mục `dist` trong Finder.
+5. Mở file `MuseBatch Studio-...dmg`, kéo app vào thư mục **Applications**.
+
+**Lần mở đầu tiên:** app chưa có chữ ký của Apple nên macOS có thể chặn. Chuột phải vào app trong Applications → **Open** → **Open**.
+Nếu vẫn bị chặn, mở Terminal và chạy:
 
 ```bash
-npm run dist
+xattr -cr "/Applications/MuseBatch Studio.app"
 ```
 
-Bộ cài NSIS nằm trong `dist\`. Nhớ chép ffmpeg vào `resources\bin` trước khi build.
+Máy mac cần cài **Google Chrome** (app dùng Chrome thật để chạy Muse). Ghép video cần ffmpeg, script đã cài sẵn qua Homebrew.
 
 ## Dữ liệu
 

@@ -29,3 +29,14 @@ nsis:
   createDesktopShortcut: true
   createStartMenuShortcut: true
   shortcutName: MuseBatch Studio
+
+# macOS: build DMG không ký (chưa có Developer ID). Lần đầu mở: chuột phải → Open.
+# ffmpeg mặc định lấy từ Homebrew (/opt/homebrew/bin, /usr/local/bin), không đóng gói.
+mac:
+  target:
+    - target: dmg
+      arch:
+        - arm64
+        - x64
+  category: public.app-category.productivity
+  identity: null
