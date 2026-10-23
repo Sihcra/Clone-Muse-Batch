@@ -33,13 +33,23 @@ vào `resources\bin` (thư mục này không đưa lên git).
 npm test
 ```
 
-## Đóng gói bộ cài
+## Build cho Windows (file .exe)
 
-```bash
-npm run dist
-```
+Làm theo từng bước:
 
-Bộ cài NSIS nằm trong `dist\`. Nhớ chép ffmpeg vào `resources\bin` trước khi build.
+1. Cài **Node.js** LTS từ https://nodejs.org (bấm Next đến hết). Máy đã có thì bỏ qua.
+2. Chép ffmpeg vào `resources\bin`: lấy `ffmpeg.exe`, `ffprobe.exe` và tất cả file `.dll` từ `Vanh\resources\bin` rồi dán vào `resources\bin` của dự án. Thiếu bước này script sẽ báo lỗi và dừng.
+3. Mở **PowerShell** trong thư mục dự án (bấm vào thanh địa chỉ của thư mục, gõ `powershell`, Enter), rồi chạy:
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File scripts\build-win.ps1
+   ```
+
+4. Đợi xong, thư mục `dist` sẽ tự mở. Chạy file `MuseBatch Studio Setup ... .exe` để cài.
+
+Windows có thể hỏi "Windows protected your PC" vì app chưa ký: bấm **More info** → **Run anyway**.
+
+Ghi chú: script này chưa chạy thử trên Windows trong lúc viết (làm trên Linux), nên lần đầu chạy có lỗi thì báo lại.
 
 ## Build cho macOS (file .dmg)
 
