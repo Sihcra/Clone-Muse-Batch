@@ -89,7 +89,7 @@
       + `<option value="model">Người mẫu cố định (${d.model.images.length}/3)</option>`
       + `<option value="rotate">Ảnh luân phiên (${d.rotate.images.length}/20)</option>`
       + '<option value="new">Nhân vật mới…</option>'
-      + d.characters.map(c => `<option value="${c.id}">Nhân vật: ${escapeHtml(c.name)} (${c.images.length}/3)</option>`).join('');
+      + d.characters.map(c => `<option value="${c.id}">Nhân vật: ${escapeHtml(c.name)} (${c.images.length}/4)</option>`).join('');
     render();
   });
   $('lib-prj').addEventListener('change', e => { prj = e.target.value; render(); });

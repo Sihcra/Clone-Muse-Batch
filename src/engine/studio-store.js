@@ -36,7 +36,7 @@ class StudioStore extends EventEmitter {
       projects,
       current: projects.some(p => p.id === d.current) ? d.current : 'default',
       characters: arr(d.characters).filter(c => c && str(c.name, 40))
-        .map(c => ({ id: str(c.id, 40) || newId('chr_'), name: str(c.name, 40), images: this.images(c.images, 3) })),
+        .map(c => ({ id: str(c.id, 40) || newId('chr_'), name: str(c.name, 40), images: this.images(c.images, 4) })),
       templates: arr(d.templates).filter(t => t && str(t.name, 60))
         .map(t => ({ id: str(t.id, 40) || newId('tpl_'), name: str(t.name, 60), text: String(t.text ?? '').slice(0, 5000) })),
       model: { on: d.model?.on === true, images: this.images(d.model?.images, 3) },

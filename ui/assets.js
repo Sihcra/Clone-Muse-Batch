@@ -125,7 +125,7 @@
     const key = t.dataset.add || t.dataset.x;
     if (!key) return;
     const cur = key === 'char' ? data.characters[k].images : data[key].images;
-    const max = key === 'rotate' ? 20 : 3;
+    const max = key === 'rotate' ? 20 : key === 'char' ? 4 : 3;
     const next = t.dataset.add ? cur.concat(await pickImages(max - cur.length)) : cur.filter((_, i) => i !== +t.dataset.i);
     if (key === 'char') save({ characters: data.characters.map((c, i) => (i === k ? { ...c, images: next } : c)) });
     else save({ [key]: { ...data[key], images: next, ...(next.length ? {} : { on: false }) } });
