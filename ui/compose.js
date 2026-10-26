@@ -35,7 +35,13 @@
     return { images: uniq.slice(0, MAX), cut: Math.max(0, uniq.length - MAX), rotateIdx, chars };
   }
 
-  const api = { findCharacters, untag, imagesFor, MAX };
+  // Dấu @ đang gõ ngay trước con trỏ: vị trí @ và chữ đã gõ sau nó (null nếu không đang gõ tag)
+  function atQuery(text, caret) {
+    const m = /(^|\s)@([^@\n]*)$/u.exec(String(text).slice(0, caret));
+    return m ? { start: caret - m[2].length - 1, query: m[2] } : null;
+  }
+
+  const api = { findCharacters, untag, imagesFor, atQuery, MAX };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.Compose = api;
 })(this);

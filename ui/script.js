@@ -191,6 +191,47 @@
   [inputScripts, paramCopies].forEach(el => el.addEventListener('input', updateComposeSummary));
   [paramDuration, paramCopies, paramBoard].forEach(el => el.addEventListener('change', updateComposeSummary));
 
+  // Gõ "@" trong ô kịch bản: dropdown dưới ô liệt kê nhân vật dẫn (cùng nguồn với "Nhân vật dẫn"), chọn để chèn @tên tại con trỏ
+  const atPop = $('input-at');
+  let atState = null; // { start, items, idx }
+  const leadChars = () => (window.App.studioData()?.characters || []).filter(c => c.images.length);
+  function closeAt() { atState = null; atPop.hidden = true; }
+  function renderAt() {
+    atPop.hidden = !atState.items.length;
+    atPop.innerHTML = atState.items.map((c, i) => `<button type="button" class="at-opt${i === atState.idx ? ' active' : ''}" data-i="${i}" role="option">${escapeHtml(c.name)}<span class="muted small">${c.images.length} ảnh</span></button>`).join('');
+  }
+  function openAt() {
+    const at = window.Compose.atQuery(inputScripts.value, inputScripts.selectionStart);
+    if (!at) return closeAt();
+    const q = at.query.trim().toLowerCase();
+    atState = { start: at.start, items: leadChars().filter(c => c.name.toLowerCase().includes(q)), idx: 0 };
+    renderAt();
+  }
+  function pickAt(i) {
+    const tag = `@${atState.items[i].name} `;
+    const caret = inputScripts.selectionStart;
+    inputScripts.value = inputScripts.value.slice(0, atState.start) + tag + inputScripts.value.slice(caret);
+    inputScripts.setSelectionRange(atState.start + tag.length, atState.start + tag.length);
+    closeAt();
+    updateComposeSummary();
+  }
+  inputScripts.addEventListener('input', openAt);
+  inputScripts.addEventListener('blur', closeAt);
+  inputScripts.addEventListener('keydown', e => {
+    if (!atState || atPop.hidden) return;
+    const n = atState.items.length;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); atState.idx = (atState.idx + (e.key === 'ArrowDown' ? 1 : n - 1)) % n; renderAt(); }
+    else if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); pickAt(atState.idx); }
+    else if (e.key === 'Escape') { e.preventDefault(); closeAt(); }
+  });
+  // mousedown thay vì click: chọn xong không làm ô kịch bản mất focus
+  atPop.addEventListener('mousedown', e => {
+    const opt = e.target.closest('.at-opt');
+    if (!opt) return;
+    e.preventDefault();
+    pickAt(+opt.dataset.i);
+  });
+
   btnAddToQueue.addEventListener('click', () => {
     const blocks = composeBlocks();
     if (composeMode === 'image' && !composeImages.length) return toast('Chế độ Từ ảnh cần ít nhất 1 ảnh sản phẩm.', 'warn');

@@ -73,6 +73,10 @@ test('Compose: người mẫu → nhân vật → luân phiên → ảnh tham ch
   assert.deepEqual(Compose.findCharacters('ngày mai đi chơi', characters), []);
   assert.deepEqual(Compose.findCharacters('Mai và @lan', characters).map(c => c.name), ['Mai', 'Lan']);
   assert.equal(Compose.untag('@Mai cười', characters), 'Mai cười');
+  assert.deepEqual(Compose.atQuery('a @Mai', 6), { start: 2, query: 'Mai' });
+  assert.deepEqual(Compose.atQuery('@', 1), { start: 0, query: '' });
+  assert.equal(Compose.atQuery('email@Mai', 9), null);
+  assert.equal(Compose.atQuery('@Mai\nnữa', 8), null);
   const r = Compose.imagesFor({
     prompt: 'Mai cầm hộp', characters, model: { on: true, images: ['mo'] },
     rotate: { on: true, images: ['r1', 'r2'], idx: 1 }, refs: ['a', 'b', 'c', 'd', 'e']
