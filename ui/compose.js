@@ -4,7 +4,7 @@
  */
 (function (root) {
   'use strict';
-  const MAX = 6;
+  const MAX = 8;
   const esc = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const END = '(?=$|[^\\p{L}\\p{N}])';
 
