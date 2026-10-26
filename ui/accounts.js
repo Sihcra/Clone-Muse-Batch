@@ -179,12 +179,26 @@
   $('acc-pool').addEventListener('change', e => saveSettings({ usePool: e.target.checked }).then(() => api.listAccounts()).then(render));
   accProxies.addEventListener('change', () => saveSettings({ proxies: accProxies.value }).then(() => api.listAccounts()).then(render));
 
+  // Hỏi proxy trước (Huỷ = không tạo gì); chỉ khi có proxy/để trống mới gửi lên main để mở Chrome
+  const askProxy = () => {
+    const dlg = $('proxy-dlg');
+    const input = $('proxy-dlg-input');
+    input.value = '';
+    dlg.showModal();
+    return new Promise(resolve => dlg.addEventListener('close', () => {
+      resolve(dlg.returnValue === 'ok' ? input.value.trim() : null);
+    }, { once: true }));
+  };
+
   // Khoá nút tới khi thêm xong: bấm 2 lần không ra 2 tài khoản / 2 Chrome
   $('acc-add').addEventListener('click', async e => {
     const btn = e.currentTarget;
+    const proxy = await askProxy();
+    if (proxy === null) return;
     btn.disabled = true;
     try {
-      const acc = await api.addAccount(`Tài khoản ${view.accounts.length + 1}`);
+      const acc = await api.addAccount(`Tài khoản ${view.accounts.length + 1}`, proxy);
+      if (acc?.error) return toast(acc.error, 'danger');
       toast(`Đã thêm ${acc?.name || 'tài khoản'}. Chrome mới đã mở, đăng nhập Muse trong đó.`, 'ok');
     } finally {
       btn.disabled = false;
