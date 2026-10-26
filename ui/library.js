@@ -86,7 +86,7 @@
     if (!d.projects.some(p => p.id === prj)) prj = '';
     $('lib-prj').value = prj;
     $('lib-asset').innerHTML = '<option value="">Lưu vào Tư liệu…</option>'
-      + `<option value="model">Người mẫu cố định (${d.model.images.length}/3)</option>`
+      + `<option value="model">Người mẫu cố định (${d.model.images.length}/4)</option>`
       + `<option value="rotate">Ảnh luân phiên (${d.rotate.images.length}/20)</option>`
       + '<option value="new">Nhân vật mới…</option>'
       + d.characters.map(c => `<option value="${c.id}">Nhân vật: ${escapeHtml(c.name)} (${c.images.length}/4)</option>`).join('');
@@ -105,7 +105,7 @@
     const d = window.App.studioData();
     const ch = d.characters.find(c => c.id === to);
     const cur = to === 'model' || to === 'rotate' ? d[to].images : ch ? ch.images : [];
-    const room = (to === 'rotate' ? 20 : 3) - cur.length;
+    const room = (to === 'rotate' ? 20 : 4) - cur.length;
     if (room <= 0) return toast('Mục này đã đủ ảnh — bỏ bớt ở tab Tư liệu.', 'warn');
     const added = [];
     for (const p of imgs.slice(0, room)) {

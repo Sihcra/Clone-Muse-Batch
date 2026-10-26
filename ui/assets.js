@@ -74,14 +74,14 @@
   function renderAssets() {
     $('as-chars').innerHTML = data.characters.length ? data.characters.map((c, k) => `<div class="as-item" data-k="${k}">
         <div class="as-item-head"><input class="input" value="${escapeHtml(c.name)}" data-f="name" placeholder="Tên (viết trong prompt)"><button type="button" class="btn-ghost btn-sm" data-del="char">Xoá</button></div>
-        <div class="img-strip">${strip(c.images, 3, 'char')}</div>
+        <div class="img-strip">${strip(c.images, 4, 'char')}</div>
       </div>`).join('') : '<p class="muted small">Chưa có nhân vật. Prompt có tên nhân vật (viết hoa đúng như tên, hoặc @tên) sẽ tự gắn ảnh của họ. Ảnh đẹp ở Thư viện cũng lưu thẳng vào đây được.</p>';
     $('as-tpls').innerHTML = data.templates.length ? data.templates.map((t, k) => `<div class="as-item" data-k="${k}">
         <div class="as-item-head"><input class="input" value="${escapeHtml(t.name)}" data-f="name" placeholder="Tên mẫu"><button type="button" class="btn-ghost btn-sm" data-del="tpl">Xoá</button></div>
         <textarea class="textarea" rows="3" data-f="text" placeholder="Nội dung mẫu">${escapeHtml(t.text)}</textarea>
       </div>`).join('') : '<p class="muted small">Chưa có mẫu. Có thể lưu từ ô prompt ở Studio.</p>';
     $('as-model-on').checked = data.model.on;
-    $('as-model').innerHTML = strip(data.model.images, 3, 'model');
+    $('as-model').innerHTML = strip(data.model.images, 4, 'model');
     $('as-rotate-on').checked = data.rotate.on;
     $('as-rotate').innerHTML = strip(data.rotate.images, 20, 'rotate');
     const n = data.rotate.images.length;
@@ -125,7 +125,7 @@
     const key = t.dataset.add || t.dataset.x;
     if (!key) return;
     const cur = key === 'char' ? data.characters[k].images : data[key].images;
-    const max = key === 'rotate' ? 20 : key === 'char' ? 4 : 3;
+    const max = key === 'rotate' ? 20 : 4;
     const next = t.dataset.add ? cur.concat(await pickImages(max - cur.length)) : cur.filter((_, i) => i !== +t.dataset.i);
     if (key === 'char') save({ characters: data.characters.map((c, i) => (i === k ? { ...c, images: next } : c)) });
     else save({ [key]: { ...data[key], images: next, ...(next.length ? {} : { on: false }) } });
