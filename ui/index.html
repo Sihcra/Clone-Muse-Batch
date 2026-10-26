@@ -601,6 +601,18 @@ GET    /api/v1/tasks/:id/file?i=0  tải file kết quả (mp4 hoặc ảnh)</pr
     </form>
   </dialog>
 
+  <dialog id="proxy-dlg" class="modal">
+    <form method="dialog" class="stack">
+      <h3>Proxy cho tài khoản mới</h3>
+      <input id="proxy-dlg-input" class="input mono" maxlength="300" spellcheck="false" autocomplete="off" placeholder="ip:port hoặc ip:port:user:pass">
+      <p class="muted small">Trống = tự lấy 1 proxy từ kho dự phòng (kho trống = không dùng proxy). Chrome chỉ mở sau khi bấm Lưu.</p>
+      <div class="row" style="justify-content:flex-end">
+        <button value="cancel" class="btn-ghost" formnovalidate>Huỷ</button>
+        <button value="ok" class="btn">Lưu</button>
+      </div>
+    </form>
+  </dialog>
+
   <dialog id="merge-dlg" class="modal">
     <div class="stack">
       <h3>Ghép video</h3>

@@ -390,9 +390,13 @@ const handle = (channel, fn) => ipcMain.handle(channel, (_e, ...args) => fn(...a
 // ---------- Tài khoản ----------
 const ACCOUNT_FIELDS = ['name', 'enabled', 'threads', 'proxy'];
 handle('accounts-list', () => accountsView());
-handle('account-add', name => {
-  const acc = accountStore.add(name);
-  loginAccount(acc.id); // mở Chrome mới để đăng nhập luôn
+handle('account-add', (name, proxy = '') => {
+  const text = String(proxy || '').trim();
+  const p = text && text !== 'none' ? parseProxy(text) : null;
+  if (p?.error) return { error: `Proxy sai: ${p.error}` }; // lỗi thì chưa tạo tài khoản, chưa mở Chrome
+  let acc = accountStore.add(name);
+  if (text) acc = accountStore.update(acc.id, { proxy: text });
+  loginAccount(acc.id); // mở Chrome mới để đăng nhập luôn (sau khi đã có proxy)
   return acc;
 });
 handle('account-update', (id, patch = {}) => {
