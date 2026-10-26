@@ -98,6 +98,16 @@
     const b = e.target.closest('[data-close-dialog]');
     if (b) b.closest('dialog')?.close();
   });
+  // Enter trong ô nhập của hộp thoại → bấm nút xác nhận chính (không phải nút Huỷ / nút ghost)
+  document.addEventListener('keydown', e => {
+    if (e.key !== 'Enter' || e.isComposing || e.shiftKey || e.target.tagName !== 'INPUT') return;
+    const dlg = e.target.closest('dialog[open]');
+    if (!dlg) return;
+    const primary = dlg.querySelector('button.btn:not(.btn-ghost):not([data-close-dialog]):not(:disabled)');
+    if (!primary) return;
+    e.preventDefault();
+    primary.click();
+  });
   // Thả file ra ngoài vùng nhận thì Electron sẽ mở file thay cho app → chặn mặc định
   ['dragover', 'drop'].forEach(ev => document.addEventListener(ev, e => e.preventDefault()));
 

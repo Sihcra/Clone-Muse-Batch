@@ -68,7 +68,7 @@ test('parseResult/parseQuota của Muse', () => {
   assert.equal(parseQuota({}), null);
 });
 
-test('Compose: người mẫu → nhân vật → luân phiên → ảnh tham chiếu, tối đa 6', () => {
+test('Compose: người mẫu → nhân vật → luân phiên → ảnh tham chiếu, tối đa 8', () => {
   const characters = [{ name: 'Mai', images: ['m1'] }, { name: 'Lan', images: ['l1', 'l2'] }];
   assert.deepEqual(Compose.findCharacters('ngày mai đi chơi', characters), []);
   assert.deepEqual(Compose.findCharacters('Mai và @lan', characters).map(c => c.name), ['Mai', 'Lan']);
@@ -77,8 +77,8 @@ test('Compose: người mẫu → nhân vật → luân phiên → ảnh tham ch
     prompt: 'Mai cầm hộp', characters, model: { on: true, images: ['mo'] },
     rotate: { on: true, images: ['r1', 'r2'], idx: 1 }, refs: ['a', 'b', 'c', 'd', 'e']
   });
-  assert.deepEqual(r.images, ['mo', 'm1', 'r2', 'a', 'b', 'c']);
-  assert.equal(r.cut, 2);
+  assert.deepEqual(r.images, ['mo', 'm1', 'r2', 'a', 'b', 'c', 'd', 'e']);
+  assert.equal(r.cut, 0);
   assert.equal(r.rotateIdx, 2);
   assert.deepEqual(Compose.imagesFor({ prompt: 'x', refs: ['a', 'b'], mode: 'pair', index: 1 }).images, ['b']);
 });
