@@ -368,6 +368,16 @@ html[data-os="win32"] .mac-titlebar { padding: 0 152px 0 16px; } /* chừa 3 nú
 .st-tpl-row { margin-top: 8px; gap: 8px; }
 .st-tpl-row .select { flex: 1; min-width: 0; }
 #st-chars { margin-top: 6px; min-height: 1em; }
+
+/* ---------- Gõ @ trong Kịch bản: chọn nhân vật dẫn ---------- */
+.at-field { position: relative; }
+.at-pop {
+  position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 50; max-height: 240px; overflow: auto;
+  display: flex; flex-direction: column; padding: 4px;
+  background: var(--surface); border: 1px solid var(--line-2); border-radius: var(--r-sm); box-shadow: var(--shadow-2);
+}
+.at-opt { display: flex; justify-content: space-between; gap: 8px; padding: 8px 10px; border-radius: 6px; text-align: left; font-size: 13px; color: var(--ink); }
+.at-opt.active, .at-opt:hover { background: var(--blue-tint); }
 .st-switches { display: flex; flex-wrap: wrap; gap: 8px 18px; }
 .st-switches em { font-style: normal; font-size: 12px; }
 .studio-params { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
