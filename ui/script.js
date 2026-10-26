@@ -336,7 +336,7 @@
   };
 
   // Ảnh nhân vật dẫn gắn SAU ảnh sản phẩm/cảnh → số "dùng ảnh k" của cảnh không đổi
-  const CHAR_IMGS = 2;
+  const CHAR_IMGS = 4;
   const charOf = cfg => (cfg.char && window.App.studioData()?.characters.find(c => c.id === cfg.char)) || null;
   const charImgs = cfg => (charOf(cfg)?.images || []).slice(0, CHAR_IMGS);
   const hostLine = cfg => {
